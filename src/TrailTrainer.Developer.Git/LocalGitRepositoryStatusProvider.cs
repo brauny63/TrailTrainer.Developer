@@ -5,6 +5,8 @@ namespace TrailTrainer.Developer.Git;
 
 public sealed class LocalGitRepositoryStatusProvider : IGitRepositoryStatusProvider
 {
+    private const int GitFatalExitCode = 128;
+
     public async Task<GitRepositoryStatus> GetStatusAsync(
         string directoryPath,
         CancellationToken cancellationToken = default)
@@ -17,17 +19,35 @@ public sealed class LocalGitRepositoryStatusProvider : IGitRepositoryStatusProvi
             throw new DirectoryNotFoundException($"Directory '{workingDirectory}' does not exist.");
         }
 
+        var repositoryCheckResult = await RunGitAsync(
+            workingDirectory,
+            cancellationToken,
+            "rev-parse",
+            "--is-inside-work-tree");
+
+        if (repositoryCheckResult.ExitCode == GitFatalExitCode)
+        {
+            return GitRepositoryStatus.NotRepository;
+        }
+
+        EnsureSuccess(repositoryCheckResult, "determine whether the directory is inside a working tree");
+        if (!bool.TryParse(repositoryCheckResult.StandardOutput.Trim(), out var isInsideWorkingTree))
+        {
+            throw CreateGitException(
+                repositoryCheckResult,
+                "return a valid working-tree indicator");
+        }
+
+        if (!isInsideWorkingTree)
+        {
+            return GitRepositoryStatus.NotRepository;
+        }
+
         var rootResult = await RunGitAsync(
             workingDirectory,
             cancellationToken,
             "rev-parse",
             "--show-toplevel");
-
-        if (rootResult.ExitCode != 0 && IsNotRepository(rootResult.StandardError))
-        {
-            return GitRepositoryStatus.NotRepository;
-        }
-
         EnsureSuccess(rootResult, "determine the repository root");
 
         var repositoryRoot = rootResult.StandardOutput.Trim();
@@ -59,9 +79,6 @@ public sealed class LocalGitRepositoryStatusProvider : IGitRepositoryStatusProvi
             CurrentBranch: currentBranch,
             HasUncommittedChanges: !string.IsNullOrWhiteSpace(statusResult.StandardOutput));
     }
-
-    private static bool IsNotRepository(string standardError) =>
-        standardError.Contains("not a git repository", StringComparison.OrdinalIgnoreCase);
 
     private static string? NullIfWhiteSpace(string value)
     {
