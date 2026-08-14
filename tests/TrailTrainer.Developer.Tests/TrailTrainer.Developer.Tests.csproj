@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\TrailTrainer.Developer.CLI\TrailTrainer.Developer.CLI.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Core\TrailTrainer.Developer.Core.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Git\TrailTrainer.Developer.Git.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Tasks\TrailTrainer.Developer.Tasks.csproj" />
