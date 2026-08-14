@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Core\TrailTrainer.Developer.Core.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Git\TrailTrainer.Developer.Git.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.GitHub\TrailTrainer.Developer.GitHub.csproj" />
+    <ProjectReference Include="..\..\src\TrailTrainer.Developer.Persistence\TrailTrainer.Developer.Persistence.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Tasks\TrailTrainer.Developer.Tasks.csproj" />
   </ItemGroup>
 
