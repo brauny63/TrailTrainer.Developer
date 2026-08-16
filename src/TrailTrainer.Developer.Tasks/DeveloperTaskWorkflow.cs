@@ -103,7 +103,16 @@ public sealed class DeveloperTaskWorkflow : IDeveloperTaskWorkflow
                     $"Task {taskId} Codex process {reason} in repository '{repositoryDirectoryPath}' on expected branch '{task.ExpectedBranch}' during process execution: {codex.StandardError.Trim()}");
             }
 
-            await ValidateCodexSuccessAsync(task, repositoryDirectoryPath, codex.ExitCode, cancellationToken);
+            try
+            {
+                await ValidateCodexSuccessAsync(task, repositoryDirectoryPath, codex.ExitCode, cancellationToken);
+            }
+            catch (DeveloperTaskExecutionException exception)
+            {
+                throw new DeveloperTaskExecutionException(
+                    $"{exception.Message} Codex stdout: {codex.StandardOutput.Trim()}; Codex stderr: {codex.StandardError.Trim()}",
+                    exception);
+            }
             executionState = executionState with { Phase = CodexExecutionPhase.CodexSucceeded };
             await codexStateStore.SaveAsync(executionState, cancellationToken);
         }
