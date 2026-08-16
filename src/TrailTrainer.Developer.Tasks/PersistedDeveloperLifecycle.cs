@@ -83,8 +83,50 @@ public sealed class PersistedDeveloperLifecycle : IPersistedDeveloperLifecycle
                 "The loaded lifecycle state's TaskId does not match the requested TaskId.");
         }
 
+        if (persistedState.RecoveryStartRequest is not null)
+        {
+            var recovery = persistedState.RecoveryStartRequest;
+            var recoveredWorkflow = await lifecycleOrchestrator.ExecuteAsync(
+                recovery.DeveloperTaskFilePath,
+                recovery.RepositoryDirectoryPath,
+                recovery.ExpectedRepositoryName,
+                recovery.CommitMessage,
+                recovery.GitRemoteName,
+                recovery.SetUpstream,
+                recovery.GitHubRepository,
+                recovery.PullRequestBaseBranch,
+                recovery.PullRequestBody,
+                recovery.PullRequestDraft,
+                recovery.MergeMethod,
+                recovery.MergeCommitTitle,
+                recovery.MergeCommitMessage,
+                recovery.DeleteRemoteBranch,
+                cancellationToken);
+            if (recoveredWorkflow.State == DeveloperLifecycleState.Pending)
+            {
+                var context = new DeveloperLifecycleResumeContext(
+                    recovery.RepositoryDirectoryPath,
+                    recovery.GitHubRepository,
+                    recoveredWorkflow.Workflow.PullRequest.PullRequest.Number,
+                    recoveredWorkflow.Workflow.Completion.Completion.BranchName,
+                    recovery.PullRequestBaseBranch,
+                    recovery.GitRemoteName);
+                await stateStore.SaveAsync(
+                    new DeveloperLifecyclePersistedState(request.TaskId, persistedState.TaskFilePath, context, clock.UtcNow),
+                    cancellationToken);
+                return new PersistedDeveloperLifecycleResumeResult(
+                    PersistedDeveloperLifecycleResumeState.Pending, request.TaskId, persistedState, null, recoveredWorkflow);
+            }
+
+            await stateStore.DeleteAsync(request.TaskId, cancellationToken);
+            var recoveryState = recoveredWorkflow.State == DeveloperLifecycleState.Completed
+                ? PersistedDeveloperLifecycleResumeState.Completed
+                : PersistedDeveloperLifecycleResumeState.Failed;
+            return new PersistedDeveloperLifecycleResumeResult(recoveryState, request.TaskId, persistedState, null, recoveredWorkflow);
+        }
+
         var lifecycle = await lifecycleResumer.ResumeAsync(
-            persistedState.ResumeContext,
+            persistedState.ResumeContext ?? throw new InvalidOperationException("Persisted lifecycle state has no resume payload."),
             request.MergeMethod,
             request.MergeCommitTitle,
             request.MergeCommitMessage,
