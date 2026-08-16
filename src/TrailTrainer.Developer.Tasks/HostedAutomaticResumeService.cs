@@ -34,35 +34,38 @@ public sealed class HostedAutomaticResumeService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (intake is not null)
-        {
-            var intakeRequest = intakeRequestProvider!.GetRequest()
-                ?? throw new InvalidOperationException("The initial intake request provider returned null.");
-            try
-            {
-                await intake.ExecuteAsync(intakeRequest, cancellationToken);
-            }
-            catch (DeveloperTaskExecutionException exception)
-            {
-                logger?.LogError(
-                    exception,
-                    "Initial Developer Task execution failed in a controlled manner for repository {RepositoryPath}.",
-                    intakeRequest.RepositoryPath);
-                return;
-            }
-        }
-
         var request = requestProvider.GetRequest()
             ?? throw new InvalidOperationException("The automatic resume worker request provider returned null.");
+        AutomaticResumeWorkerResult resumeResult;
         try
         {
-            await worker.RunAsync(request, cancellationToken);
+            resumeResult = await worker.RunAsync(request, cancellationToken);
         }
         catch (DeveloperTaskExecutionException exception)
         {
             logger?.LogError(
                 exception,
                 "Automatic Developer Task resume failed in a controlled manner.");
+            return;
+        }
+
+        if (resumeResult.ResumableWorkFound || intake is null)
+        {
+            return;
+        }
+
+        var intakeRequest = intakeRequestProvider!.GetRequest()
+            ?? throw new InvalidOperationException("The initial intake request provider returned null.");
+        try
+        {
+            await intake.ExecuteAsync(intakeRequest, cancellationToken);
+        }
+        catch (DeveloperTaskExecutionException exception)
+        {
+            logger?.LogError(
+                exception,
+                "Initial Developer Task execution failed in a controlled manner for repository {RepositoryPath}.",
+                intakeRequest.RepositoryPath);
         }
     }
 

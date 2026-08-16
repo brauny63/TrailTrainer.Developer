@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Hosting;
 using TrailTrainer.Developer.Core;
 using TrailTrainer.Developer.Tasks;
@@ -141,7 +140,7 @@ public sealed class HostedAutomaticResumeServiceTests
             intake,
             new EnabledIntakeRequestProvider()).StartAsync(CancellationToken.None);
 
-        Assert.Equal(0, worker.CallCount);
+        Assert.Equal(1, worker.CallCount);
     }
 
     [Fact]
@@ -159,7 +158,41 @@ public sealed class HostedAutomaticResumeServiceTests
                 new EnabledIntakeRequestProvider()).StartAsync(CancellationToken.None));
 
         Assert.Same(expected, exception);
-        Assert.Equal(0, worker.CallCount);
+        Assert.Equal(1, worker.CallCount);
+    }
+
+    [Fact]
+    public async Task StartAsync_ResumableReviewRepairTakesPriorityAndSkipsInitialIntake()
+    {
+        var provider = new FakeRequestProvider { Request = WorkerRequest() };
+        var worker = new FakeWorker { Result = WorkerResult(resumableWorkFound: true) };
+        var intake = new RecordingIntake();
+
+        await new HostedAutomaticResumeService(
+            worker,
+            provider,
+            intake,
+            new EnabledIntakeRequestProvider()).StartAsync(CancellationToken.None);
+
+        Assert.Equal(1, worker.CallCount);
+        Assert.Equal(0, intake.CallCount);
+    }
+
+    [Fact]
+    public async Task StartAsync_NoRecoverableWorkRunsInitialIntakeAfterResumeDetection()
+    {
+        var calls = new List<string>();
+        var provider = new FakeRequestProvider { Request = WorkerRequest() };
+        var worker = new FakeWorker { Result = WorkerResult(), Calls = calls };
+        var intake = new RecordingIntake { Calls = calls };
+
+        await new HostedAutomaticResumeService(
+            worker,
+            provider,
+            intake,
+            new EnabledIntakeRequestProvider()).StartAsync(CancellationToken.None);
+
+        Assert.Equal(["resume", "intake"], calls);
     }
 
     [Fact]
@@ -271,9 +304,89 @@ public sealed class HostedAutomaticResumeServiceTests
                 3));
     }
 
-    private static AutomaticResumeWorkerResult WorkerResult() => new(
-        (RepeatedDelayedAutomaticResumeResult)RuntimeHelpers.GetUninitializedObject(
-            typeof(RepeatedDelayedAutomaticResumeResult)));
+    private static AutomaticResumeWorkerResult WorkerResult(bool resumableWorkFound = false)
+    {
+        AutomaticPersistedLifecycleResumeResult resume;
+        if (resumableWorkFound)
+        {
+            var persisted = new DeveloperLifecyclePersistedState(
+                "DEV-0007",
+                "task.md",
+                new DeveloperLifecycleResumeContext(
+                    "repository",
+                    new GitHubRepositoryIdentity("owner", "repository"),
+                    7,
+                    "feature/dev-0007-implement-valueobject",
+                    "main",
+                    "origin"),
+                DateTimeOffset.UnixEpoch);
+            var candidate = new AutomaticResumeCandidateResult(
+                AutomaticResumeCandidateState.Found,
+                persisted,
+                new PersistedLifecycleResumeTarget(persisted.TaskId, persisted));
+            var status = new PullRequestStatusGateResult(7, "head", PullRequestGateState.Pending, []);
+            var lifecycle = new DeveloperLifecycleResumeResult(
+                DeveloperLifecycleState.Pending,
+                persisted.ResumeContext,
+                status);
+            resume = new AutomaticPersistedLifecycleResumeResult(
+                AutomaticPersistedLifecycleResumeState.Pending,
+                candidate,
+                new PersistedDeveloperLifecycleResumeResult(
+                    PersistedDeveloperLifecycleResumeState.Pending,
+                    persisted.TaskId,
+                    persisted,
+                    lifecycle));
+        }
+        else
+        {
+            resume = new AutomaticPersistedLifecycleResumeResult(
+                AutomaticPersistedLifecycleResumeState.NotFound,
+                new AutomaticResumeCandidateResult(AutomaticResumeCandidateState.NotFound));
+        }
+
+        var step = new AutomaticResumeBatchStepResult(
+            resumableWorkFound ? AutomaticResumeBatchStepState.Pending : AutomaticResumeBatchStepState.Empty,
+            resume,
+            resumableWorkFound);
+        var batch = new AutomaticResumeBatchRunResult(
+            resumableWorkFound ? AutomaticResumeBatchRunState.Pending : AutomaticResumeBatchRunState.Empty,
+            [step],
+            resumableWorkFound);
+        var decision = new AutomaticResumeSchedulingDecision(
+            resumableWorkFound ? AutomaticResumeSchedulingDecisionState.ResumeLater : AutomaticResumeSchedulingDecisionState.Finished,
+            batch,
+            resumableWorkFound,
+            false);
+        var run = new AutomaticResumeRunResult(
+            resumableWorkFound ? AutomaticResumeRunState.ResumeLater : AutomaticResumeRunState.Finished,
+            [batch],
+            [decision],
+            resumableWorkFound,
+            false);
+        return new AutomaticResumeWorkerResult(new RepeatedDelayedAutomaticResumeResult(
+            resumableWorkFound ? RepeatedDelayedAutomaticResumeState.RunLimitReached : RepeatedDelayedAutomaticResumeState.Finished,
+            [run],
+            0,
+            resumableWorkFound,
+            false));
+    }
+
+    private sealed class RecordingIntake : IInitialDeveloperTaskIntake
+    {
+        public int CallCount { get; private set; }
+        public List<string>? Calls { get; init; }
+
+        public Task<InitialDeveloperTaskIntakeResult> ExecuteAsync(
+            InitialDeveloperTaskIntakeRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            Calls?.Add("intake");
+            return Task.FromResult(new InitialDeveloperTaskIntakeResult(
+                InitialDeveloperTaskIntakeState.NoTaskFound));
+        }
+    }
 
     private sealed class FakeRequestProvider : IAutomaticResumeWorkerRequestProvider
     {
@@ -303,12 +416,14 @@ public sealed class HostedAutomaticResumeServiceTests
         public AutomaticResumeWorkerRequest? Request { get; private set; }
         public CancellationToken Token { get; private set; }
         public AutomaticResumeWorkerResult? ReturnedResult { get; private set; }
+        public List<string>? Calls { get; init; }
 
         public Task<AutomaticResumeWorkerResult> RunAsync(
             AutomaticResumeWorkerRequest request,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
+            Calls?.Add("resume");
             Request = request;
             Token = cancellationToken;
             if (HonorCancellation)

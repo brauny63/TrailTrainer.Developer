@@ -9,4 +9,9 @@ public sealed record AutomaticResumeWorkerResult
     }
 
     public RepeatedDelayedAutomaticResumeResult ExecutionResult { get; }
+
+    public bool ResumableWorkFound => ExecutionResult.Runs
+        .SelectMany(run => run.BatchRuns)
+        .SelectMany(batchRun => batchRun.Steps)
+        .Any(step => step.Resume.State != AutomaticPersistedLifecycleResumeState.NotFound);
 }
