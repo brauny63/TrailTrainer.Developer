@@ -7,4 +7,5 @@ public sealed class CodexExecutionOptions
     public string[] AdditionalArguments { get; set; } = [];
     public TimeSpan Timeout { get; set; } = TimeSpan.FromMinutes(30);
     public int MaximumDiagnosticCharacters { get; set; } = 16_384;
+    public string? UserProfileDirectory { get; set; }
 }

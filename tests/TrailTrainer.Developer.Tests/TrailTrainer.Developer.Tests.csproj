@@ -20,6 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\TrailTrainer.Developer.FakeCodexCli\TrailTrainer.Developer.FakeCodexCli.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.CLI\TrailTrainer.Developer.CLI.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Core\TrailTrainer.Developer.Core.csproj" />
     <ProjectReference Include="..\..\src\TrailTrainer.Developer.Git\TrailTrainer.Developer.Git.csproj" />

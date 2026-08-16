@@ -2,11 +2,134 @@ using TrailTrainer.Developer.Core;
 using TrailTrainer.Developer.Tasks;
 using TrailTrainer.Developer.Host;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
+using TrailTrainer.Developer.FakeCodexCli;
+using System.Runtime.InteropServices;
 
 namespace TrailTrainer.Developer.Tests;
 
 public sealed class CodexTaskExecutionIntegrationTests
 {
+    [Fact]
+    public async Task FakeExecutableHost_UsesWorkingDirectoryProfileArgumentAndCapturesOutputAndExitCode()
+    {
+        var repository = Path.Combine(Path.GetTempPath(), $"codex-host-{Guid.NewGuid():N}");
+        var profile = Path.Combine(repository, "profile");
+        Directory.CreateDirectory(repository);
+        try
+        {
+            var helper = typeof(Program).Assembly.Location;
+            var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
+            {
+                ExecutablePath = DotNetHostPath,
+                AdditionalArguments = [helper],
+                UserProfileDirectory = profile
+            }));
+
+            var result = await executor.ExecuteAsync(new CodexTaskExecutionRequest(repository, "exit-23"));
+
+            Assert.Equal(23, result.ExitCode);
+            Assert.Contains($"cwd={repository}", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("instruction=Work the Developer Task at exit-23 completely.", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains($"USERPROFILE={Path.GetFullPath(profile)}", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains($"APPDATA={Path.Combine(profile, "AppData", "Roaming")}", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("fake-codex-stderr", result.StandardError, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(repository, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Diagnostics_AreBoundedAndDoNotEnumerateSecretLikeEnvironmentValues()
+    {
+        var repository = Path.Combine(Path.GetTempPath(), $"codex-logs-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repository);
+        var logs = new ListLogger<CodexCliTaskExecutor>();
+        var secretName = $"DEV0051_SECRET_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(secretName, "credential-must-not-be-logged");
+        try
+        {
+            var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
+            {
+                ExecutablePath = DotNetHostPath,
+                AdditionalArguments = [typeof(Program).Assembly.Location],
+                UserProfileDirectory = Path.Combine(repository, new string('p', 80)),
+                MaximumDiagnosticCharacters = 64
+            }), logs);
+
+            await executor.ExecuteAsync(new CodexTaskExecutionRequest(repository, "bounded"));
+
+            var combined = string.Join(Environment.NewLine, logs.Messages);
+            Assert.DoesNotContain(secretName, combined, StringComparison.Ordinal);
+            Assert.DoesNotContain("credential-must-not-be-logged", combined, StringComparison.Ordinal);
+            Assert.All(logs.StateValues.Where(value => value.Key is "Environment" or "StandardOutput" or "StandardError"),
+                value => Assert.True(value.Value?.ToString()?.Length <= 64));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(secretName, null);
+            Directory.Delete(repository, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Timeout_KillsTheFakeCliProcessTree()
+    {
+        var repository = Path.Combine(Path.GetTempPath(), $"codex-timeout-{Guid.NewGuid():N}");
+        var marker = Path.Combine(repository, "child-marker");
+        Directory.CreateDirectory(repository);
+        try
+        {
+            var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
+            {
+                ExecutablePath = DotNetHostPath,
+                AdditionalArguments = [typeof(Program).Assembly.Location],
+                UserProfileDirectory = repository,
+                Timeout = TimeSpan.FromMilliseconds(300)
+            }));
+
+            var result = await executor.ExecuteAsync(
+                new CodexTaskExecutionRequest(repository, $"spawn-child:{marker}"));
+            await Task.Delay(TimeSpan.FromSeconds(3));
+
+            Assert.True(result.TimedOut);
+            Assert.Equal(-1, result.ExitCode);
+            Assert.False(File.Exists(marker));
+        }
+        finally
+        {
+            Directory.Delete(repository, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_KillsTheRunningFakeCliAndPropagatesCancellation()
+    {
+        var repository = Path.Combine(Path.GetTempPath(), $"codex-cancel-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repository);
+        try
+        {
+            var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
+            {
+                ExecutablePath = DotNetHostPath,
+                AdditionalArguments = [typeof(Program).Assembly.Location],
+                UserProfileDirectory = repository,
+                Timeout = TimeSpan.FromMinutes(1)
+            }));
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => executor.ExecuteAsync(
+                new CodexTaskExecutionRequest(repository, $"spawn-child:{Path.Combine(repository, "cancel-marker")}"),
+                cancellation.Token));
+        }
+        finally
+        {
+            Directory.Delete(repository, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task AdapterStartupFailure_IsDeterministicWithoutLaunchingRealCodex()
     {
@@ -107,6 +230,7 @@ public sealed class CodexTaskExecutionIntegrationTests
     public async Task Dev0007Regression_ExitZeroWithoutReview_RemainsRetryableAndNeverCompletes()
     {
         var fixture = new Fixture(7);
+        fixture.Executor.Result = new CodexTaskExecutionResult(0, "codex useful output", "codex useful error");
         fixture.ReviewParser.Exception = new FileNotFoundException(
             "review missing",
             "docs/developer-reviews/REVIEW-0007.md");
@@ -116,6 +240,8 @@ public sealed class CodexTaskExecutionIntegrationTests
         Assert.Contains("DEV-0007", exception.Message, StringComparison.Ordinal);
         Assert.Contains("REVIEW-0007.md", exception.Message, StringComparison.Ordinal);
         Assert.Contains("missing", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("codex useful output", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("codex useful error", exception.Message, StringComparison.Ordinal);
         Assert.Equal(1, fixture.Executor.Calls);
         Assert.Equal(CodexExecutionPhase.BranchCreated, fixture.Store.State!.Phase);
         Assert.Equal(0, fixture.Completer.Calls);
@@ -396,4 +522,21 @@ public sealed class CodexTaskExecutionIntegrationTests
             return Task.FromResult(new PullRequestEnsureResult(new PullRequestInfo(48, new Uri("https://example.test/48"), title, head, @base, draft), true));
         }
     }
+
+    private sealed class ListLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+        public List<KeyValuePair<string, object?>> StateValues { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Messages.Add(formatter(state, exception));
+            if (state is IEnumerable<KeyValuePair<string, object?>> values) StateValues.AddRange(values);
+        }
+    }
+
+    private static string DotNetHostPath => Path.GetFullPath(Path.Combine(
+        RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
 }
