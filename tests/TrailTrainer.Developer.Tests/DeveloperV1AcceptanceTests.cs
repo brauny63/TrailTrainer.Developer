@@ -187,7 +187,8 @@ public sealed class DeveloperV1AcceptanceTests
             {
                 [$"{DeveloperProductionRuntimeOptions.SectionName}:" +
                     nameof(DeveloperProductionRuntimeOptions.LifecycleStateStorageDirectory)] =
-                    System.IO.Path.Combine(root, "lifecycle")
+                    System.IO.Path.Combine(root, "lifecycle"),
+                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run"
             })
             .Build();
         try

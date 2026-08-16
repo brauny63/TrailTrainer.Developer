@@ -152,7 +152,8 @@ public sealed class HostedAutomaticResumeServiceTests
                 typeof(IAutomaticResumeWorker),
                 typeof(IAutomaticResumeWorkerRequestProvider),
                 typeof(IInitialDeveloperTaskIntake),
-                typeof(IInitialDeveloperTaskIntakeRequestProvider)
+                typeof(IInitialDeveloperTaskIntakeRequestProvider),
+                typeof(Microsoft.Extensions.Logging.ILogger<HostedAutomaticResumeService>)
             ],
             parameters.Select(parameter => parameter.ParameterType));
         Assert.False(typeof(BackgroundService).IsAssignableFrom(serviceType));

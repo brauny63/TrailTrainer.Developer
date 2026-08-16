@@ -35,6 +35,8 @@ public sealed class ProductionRuntimeHealthValidator : IProductionRuntimeHealthV
         _ = provider.GetRequiredService<IAutomaticResumeWorkerRequestProvider>();
         _ = provider.GetRequiredService<IInitialDeveloperTaskIntake>();
         _ = provider.GetRequiredService<IInitialDeveloperTaskIntakeRequestProvider>().GetRequest();
+        _ = provider.GetRequiredService<ICodexTaskExecutor>();
+        _ = provider.GetRequiredService<ICodexExecutionStateStore>();
         return Task.CompletedTask;
     }
 }

@@ -162,6 +162,7 @@ public sealed class ProductionRuntimeDependencyRegistrationTests
     private static IConfiguration CreateConfiguration(string? storageDirectory)
     {
         var values = new Dictionary<string, string?>();
+        values[$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run";
         if (storageDirectory is not null)
         {
             values[$"{DeveloperProductionRuntimeOptions.SectionName}:" +

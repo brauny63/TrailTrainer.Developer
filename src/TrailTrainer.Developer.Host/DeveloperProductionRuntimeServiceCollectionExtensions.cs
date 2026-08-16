@@ -39,10 +39,17 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
                      !string.IsNullOrWhiteSpace(options.RemoteName)),
                 "Enabled initial task intake requires repository path, repository name, GitHub owner, base branch, and remote name.")
             .ValidateOnStart();
+        services.AddOptions<CodexExecutionOptions>()
+            .Bind(configuration.GetSection(CodexExecutionOptions.SectionName))
+            .Validate(static options => !string.IsNullOrWhiteSpace(options.ExecutablePath), "CodexExecution:ExecutablePath is required.")
+            .Validate(static options => options.Timeout > TimeSpan.Zero, "CodexExecution:Timeout must be positive.")
+            .Validate(static options => options.MaximumDiagnosticCharacters > 0, "CodexExecution:MaximumDiagnosticCharacters must be positive.")
+            .ValidateOnStart();
 
         services.AddLogging();
 
         services.TryAddSingleton<HttpClient>();
+        services.TryAddSingleton<ICodexTaskExecutor, CodexCliTaskExecutor>();
 
         services.TryAddSingleton<IGitRepositoryStatusProvider, LocalGitRepositoryStatusProvider>();
         services.TryAddSingleton<IGitBranchCreator, LocalGitBranchCreator>();
@@ -72,6 +79,8 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
             new LocalJsonDeveloperLifecycleStateStore(GetStorageDirectory(serviceProvider)));
         services.TryAddSingleton<IDeveloperLifecycleStateDiscovery>(serviceProvider =>
             new LocalJsonDeveloperLifecycleStateDiscovery(GetStorageDirectory(serviceProvider)));
+        services.TryAddSingleton<ICodexExecutionStateStore>(serviceProvider =>
+            new LocalJsonCodexExecutionStateStore(GetStorageDirectory(serviceProvider)));
         services.TryAddSingleton<IPersistedDeveloperLifecycle, PersistedDeveloperLifecycle>();
         services.TryAddSingleton<IAutomaticResumeCandidateSelector, AutomaticResumeCandidateSelector>();
         services.TryAddSingleton<IInitialDeveloperTaskIntake, InitialDeveloperTaskIntake>();
