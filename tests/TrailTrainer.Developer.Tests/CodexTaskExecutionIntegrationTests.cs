@@ -42,7 +42,7 @@ public sealed class CodexTaskExecutionIntegrationTests
 
         await fixture.ExecuteAsync();
 
-        Assert.Equal(["parse", "load", "status", "start", "save:BranchCreated", "codex", "save:CodexSucceeded", "complete", "pull-request", "delete"], fixture.Calls);
+        Assert.Equal(["parse", "load", "status", "start", "save:BranchCreated", "codex", "status", "review-parse", "review-validate", "save:CodexSucceeded", "complete", "pull-request", "delete"], fixture.Calls);
         Assert.Equal(1, fixture.Executor.Calls);
         Assert.Equal("repository", fixture.Executor.Request!.RepositoryPath);
         Assert.Equal("task.md", fixture.Executor.Request.DeveloperTaskFilePath);
@@ -55,7 +55,7 @@ public sealed class CodexTaskExecutionIntegrationTests
         var fixture = new Fixture();
         fixture.Executor.Result = new CodexTaskExecutionResult(7, "output", "failure");
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync());
+        var exception = await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
 
         Assert.Contains("exit code 7", exception.Message, StringComparison.Ordinal);
         Assert.Equal(0, fixture.Completer.Calls);
@@ -69,7 +69,7 @@ public sealed class CodexTaskExecutionIntegrationTests
         var fixture = new Fixture();
         fixture.Executor.Result = new CodexTaskExecutionResult(-1, "partial", "timeout", TimedOut: true);
 
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync());
+        var exception = await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
 
         Assert.Contains("timed out", exception.Message, StringComparison.Ordinal);
         Assert.Equal(0, fixture.Completer.Calls);
@@ -104,16 +104,70 @@ public sealed class CodexTaskExecutionIntegrationTests
     }
 
     [Fact]
-    public async Task MissingOrInvalidReviewAfterSuccessfulCodex_IsSurfacedByExistingGate()
+    public async Task Dev0007Regression_ExitZeroWithoutReview_RemainsRetryableAndNeverCompletes()
+    {
+        var fixture = new Fixture(7);
+        fixture.ReviewParser.Exception = new FileNotFoundException(
+            "review missing",
+            "docs/developer-reviews/REVIEW-0007.md");
+
+        var exception = await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
+
+        Assert.Contains("DEV-0007", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("REVIEW-0007.md", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("missing", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, fixture.Executor.Calls);
+        Assert.Equal(CodexExecutionPhase.BranchCreated, fixture.Store.State!.Phase);
+        Assert.Equal(0, fixture.Completer.Calls);
+        Assert.Equal(0, fixture.PullRequests.Calls);
+    }
+
+    [Fact]
+    public async Task MissingReview_OnStillCleanExpectedBranch_RetriesDeterministically()
     {
         var fixture = new Fixture();
-        fixture.Completer.Exception = new FileNotFoundException("review missing");
+        fixture.ReviewParser.Exception = new FileNotFoundException("review missing", "review.md");
 
-        await Assert.ThrowsAsync<FileNotFoundException>(() => fixture.ExecuteAsync());
+        await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
+        fixture.ReviewParser.Exception = null;
 
-        Assert.Equal(1, fixture.Executor.Calls);
-        Assert.Equal(CodexExecutionPhase.CodexSucceeded, fixture.Store.State!.Phase);
+        await fixture.ExecuteAsync();
+
+        Assert.Equal(1, fixture.Starter.Calls);
+        Assert.Equal(2, fixture.Executor.Calls);
+        Assert.Equal(1, fixture.Completer.Calls);
+        Assert.Equal(1, fixture.PullRequests.Calls);
+    }
+
+    [Fact]
+    public async Task ExitZeroWithInvalidReview_DoesNotPersistSuccessOrComplete()
+    {
+        var fixture = new Fixture();
+        fixture.ReviewValidator.Result = new DeveloperReviewValidationResult(
+            new DeveloperTaskId(48), DeveloperReviewStatus.Blocked, ["Review status is BLOCKED."], []);
+
+        var exception = await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
+
+        Assert.Contains("invalid", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(CodexExecutionPhase.BranchCreated, fixture.Store.State!.Phase);
+        Assert.Equal(0, fixture.Completer.Calls);
         Assert.Equal(0, fixture.PullRequests.Calls);
+    }
+
+    [Theory]
+    [InlineData("feature/unrelated", false)]
+    [InlineData("feature/dev-0048", true)]
+    public async Task RetryOnUnexpectedOrDirtyBranch_BlocksWithoutCodexOrCleanup(string branch, bool dirty)
+    {
+        var fixture = new Fixture();
+        fixture.Store.State = new CodexExecutionState("DEV-0048", "repository", "task.md", CodexExecutionPhase.BranchCreated);
+        fixture.Status.Result = new GitRepositoryStatus(true, "repository", branch, dirty);
+
+        await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
+
+        Assert.Equal(0, fixture.Starter.Calls);
+        Assert.Equal(0, fixture.Executor.Calls);
+        Assert.Equal(CodexExecutionPhase.BranchCreated, fixture.Store.State.Phase);
     }
 
     private sealed class Fixture
@@ -125,18 +179,24 @@ public sealed class CodexTaskExecutionIntegrationTests
         public FakeCompleter Completer { get; }
         public FakePullRequests PullRequests { get; }
         public FakeStatusProvider Status { get; }
+        public FakeReviewParser ReviewParser { get; }
+        public FakeReviewValidator ReviewValidator { get; }
         private DeveloperTaskWorkflow Workflow { get; }
 
-        public Fixture()
+        public Fixture(int taskNumber = 48)
         {
+            var expectedBranch = $"feature/dev-{taskNumber:0000}";
             Starter = new FakeStarter(Calls);
             Executor = new FakeExecutor(Calls);
             Store = new FakeStateStore(Calls);
             Completer = new FakeCompleter(Calls);
             PullRequests = new FakePullRequests(Calls);
-            Status = new FakeStatusProvider(Calls);
+            Status = new FakeStatusProvider(Calls, expectedBranch);
+            ReviewParser = new FakeReviewParser(Calls, taskNumber);
+            ReviewValidator = new FakeReviewValidator(Calls, taskNumber);
             Workflow = new DeveloperTaskWorkflow(
-                new FakeParser(Calls), Completer, PullRequests, Starter, Executor, Store, Status);
+                new FakeParser(Calls, taskNumber), Completer, PullRequests, Starter, Executor, Store, Status,
+                ReviewParser, ReviewValidator);
         }
 
         public Task<DeveloperTaskWorkflowResult> ExecuteAsync() => Workflow.ExecuteAsync(
@@ -194,19 +254,47 @@ public sealed class CodexTaskExecutionIntegrationTests
         Assert.Null(fixture.Store.State);
     }
 
-    private sealed class FakeStatusProvider(IList<string> calls) : IGitRepositoryStatusProvider
+    private sealed class FakeStatusProvider : IGitRepositoryStatusProvider
     {
-        public GitRepositoryStatus Result { get; set; } = new(true, "repository", "main", false);
+        private readonly IList<string> calls;
+        private readonly Queue<GitRepositoryStatus> results = new();
+
+        public FakeStatusProvider(IList<string> calls, string expectedBranch)
+        {
+            this.calls = calls;
+            results.Enqueue(new GitRepositoryStatus(true, "repository", "main", false));
+            results.Enqueue(new GitRepositoryStatus(true, "repository", expectedBranch, false));
+        }
+
+        public GitRepositoryStatus Result
+        {
+            set
+            {
+                results.Clear();
+                results.Enqueue(value);
+            }
+        }
+
         public Task<GitRepositoryStatus> GetStatusAsync(string path, CancellationToken token = default)
-        { calls.Add("status"); return Task.FromResult(Result); }
+        {
+            calls.Add("status");
+            var result = results.Count > 1 ? results.Dequeue() : results.Peek();
+            return Task.FromResult(result);
+        }
     }
 
-    private sealed class FakeParser(IList<string> calls) : IDeveloperTaskParser
+    private sealed class FakeParser(IList<string> calls, int taskNumber) : IDeveloperTaskParser
     {
         public Task<DeveloperTaskDocument> ParseAsync(string path, CancellationToken cancellationToken = default)
         {
             calls.Add("parse");
-            return Task.FromResult(new DeveloperTaskDocument(new DeveloperTaskId(48), "Codex", path, "repository", "feature/dev-0048", "review.md"));
+            return Task.FromResult(new DeveloperTaskDocument(
+                new DeveloperTaskId(taskNumber),
+                "Codex",
+                path,
+                "repository",
+                $"feature/dev-{taskNumber:0000}",
+                $"docs/developer-reviews/REVIEW-{taskNumber:0000}.md"));
         }
     }
 
@@ -265,6 +353,37 @@ public sealed class CodexTaskExecutionIntegrationTests
             var id = new DeveloperTaskId(48);
             var completion = new DeveloperTaskCompletionResult(id, "Codex", repository, "feature/dev-0048", "sha", message, remote, upstream, task, "review.md");
             return Task.FromResult(new DeveloperTaskGatedCompletionResult(id, new DeveloperReviewValidationResult(id, DeveloperReviewStatus.ReadyForReview, [], []), completion));
+        }
+    }
+
+    private sealed class FakeReviewParser(IList<string> calls, int taskNumber) : IDeveloperReviewParser
+    {
+        public Exception? Exception { get; set; }
+
+        public Task<DeveloperReviewDocument> ParseAsync(string path, CancellationToken token = default)
+        {
+            calls.Add("review-parse");
+            if (Exception is not null) return Task.FromException<DeveloperReviewDocument>(Exception);
+            return Task.FromResult(new DeveloperReviewDocument(
+                new DeveloperTaskId(taskNumber), "Codex", path, DeveloperReviewStatus.ReadyForReview,
+                "summary", [], [], [], [], "notes", [],
+                new DeveloperReviewVerification(true, 0, 0, true, 1, 1, 0, true),
+                "None", "None", false, false));
+        }
+    }
+
+    private sealed class FakeReviewValidator(IList<string> calls, int taskNumber) : IDeveloperReviewValidator
+    {
+        public DeveloperReviewValidationResult Result { get; set; } = new(
+            new DeveloperTaskId(taskNumber), DeveloperReviewStatus.ReadyForReview, [], []);
+
+        public Task<DeveloperReviewValidationResult> ValidateAsync(
+            DeveloperTaskDocument task,
+            DeveloperReviewDocument review,
+            CancellationToken token = default)
+        {
+            calls.Add("review-validate");
+            return Task.FromResult(Result);
         }
     }
 

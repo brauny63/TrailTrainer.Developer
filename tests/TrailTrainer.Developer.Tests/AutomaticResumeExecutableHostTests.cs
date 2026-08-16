@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using TrailTrainer.Developer.Core;
 using TrailTrainer.Developer.Host;
@@ -172,6 +173,7 @@ public sealed class AutomaticResumeExecutableHostTests
     private static IHost BuildHostWithWorker(FakeWorker worker)
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
         builder.Services.AddSingleton<IAutomaticResumeWorker>(worker);
         builder.Services.AddAutomaticResumePipeline();
         builder.Services.AddSingleton<IAutomaticResumeWorkerRequestProvider>(

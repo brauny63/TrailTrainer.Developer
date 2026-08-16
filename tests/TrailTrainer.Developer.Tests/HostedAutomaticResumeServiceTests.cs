@@ -127,6 +127,56 @@ public sealed class HostedAutomaticResumeServiceTests
     }
 
     [Fact]
+    public async Task StartAsync_ControlledTaskFailureWithMissingReview_DoesNotEscapeHostBoundary()
+    {
+        var provider = new FakeRequestProvider { Request = WorkerRequest() };
+        var worker = new FakeWorker { Result = WorkerResult() };
+        var intake = new ThrowingIntake(new DeveloperTaskExecutionException(
+            "DEV-0007 review missing",
+            new FileNotFoundException("REVIEW-0007.md missing")));
+
+        await new HostedAutomaticResumeService(
+            worker,
+            provider,
+            intake,
+            new EnabledIntakeRequestProvider()).StartAsync(CancellationToken.None);
+
+        Assert.Equal(0, worker.CallCount);
+    }
+
+    [Fact]
+    public async Task StartAsync_UnrelatedIntakeFailureStillEscapes()
+    {
+        var provider = new FakeRequestProvider { Request = WorkerRequest() };
+        var worker = new FakeWorker { Result = WorkerResult() };
+        var expected = new InvalidOperationException("configuration invariant");
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new HostedAutomaticResumeService(
+                worker,
+                provider,
+                new ThrowingIntake(expected),
+                new EnabledIntakeRequestProvider()).StartAsync(CancellationToken.None));
+
+        Assert.Same(expected, exception);
+        Assert.Equal(0, worker.CallCount);
+    }
+
+    [Fact]
+    public async Task StartAsync_ControlledResumeFailure_DoesNotEscapeHostBoundary()
+    {
+        var provider = new FakeRequestProvider { Request = WorkerRequest() };
+        var worker = new FakeWorker
+        {
+            Exception = new DeveloperTaskExecutionException("DEV-0007 invalid review")
+        };
+
+        await CreateService(worker, provider).StartAsync(CancellationToken.None);
+
+        Assert.Equal(1, worker.CallCount);
+    }
+
+    [Fact]
     public async Task StopAsync_CompletesWithoutProviderOrWorkerInvocation()
     {
         using var source = new CancellationTokenSource();
@@ -186,6 +236,21 @@ public sealed class HostedAutomaticResumeServiceTests
             null,
             null,
             false);
+    }
+
+    private sealed class EnabledIntakeRequestProvider : IInitialDeveloperTaskIntakeRequestProvider
+    {
+        public InitialDeveloperTaskIntakeRequest GetRequest() => new(
+            true, "repository", "repository", "owner", "main", "origin",
+            PullRequestMergeMethod.Squash, null, null, false);
+    }
+
+    private sealed class ThrowingIntake(Exception exception) : IInitialDeveloperTaskIntake
+    {
+        public Task<InitialDeveloperTaskIntakeResult> ExecuteAsync(
+            InitialDeveloperTaskIntakeRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<InitialDeveloperTaskIntakeResult>(exception);
     }
 
     private static AutomaticResumeWorkerRequest WorkerRequest()
