@@ -975,6 +975,45 @@ public sealed class WindowsServiceManagementCommandTests
             call.Arguments[0] is "create" or "delete" or "config" or "failure" or "failureflag");
     }
 
+    [Theory]
+    [InlineData(OperationalHealthStatus.Healthy, 0)]
+    [InlineData(OperationalHealthStatus.Degraded, 1)]
+    [InlineData(OperationalHealthStatus.Unhealthy, 1)]
+    public async Task Health_DispatchesExactlyOnceWithScriptFriendlyResult(
+        OperationalHealthStatus status,
+        int expectedExitCode)
+    {
+        var manager = new RecordingServiceManager();
+        var diagnostics = new RecordingHealthDiagnostics(
+            new OperationalHealthResult(status, "deterministic reason"));
+        var output = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager, () => diagnostics);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["health"], "host.exe", output, TextWriter.Null);
+
+        Assert.Equal(expectedExitCode, exitCode);
+        Assert.Equal(1, diagnostics.Calls);
+        Assert.Empty(manager.Operations);
+        Assert.Equal($"{status}: deterministic reason{Environment.NewLine}", output.ToString());
+    }
+
+    [Fact]
+    public async Task Health_InvalidArgumentsReturnInvalidCommandExitCodeWithoutDiagnostics()
+    {
+        var diagnostics = new RecordingHealthDiagnostics(
+            new OperationalHealthResult(OperationalHealthStatus.Healthy, "ready"));
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(
+            new RecordingServiceManager(),
+            () => diagnostics);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["health", "extra"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.InvalidCommandExitCode, exitCode);
+        Assert.Equal(0, diagnostics.Calls);
+    }
+
     private static ScWindowsServiceManager CreateManager(IWindowsServiceProcessRunner runner) =>
         new(runner, new StubPlatform(true));
 
@@ -1060,4 +1099,17 @@ public sealed class WindowsServiceManagementCommandTests
     }
 
     private sealed record ProcessCall(string Executable, IReadOnlyList<string> Arguments);
+
+    private sealed class RecordingHealthDiagnostics(OperationalHealthResult result)
+        : IOperationalHealthDiagnostics
+    {
+        public int Calls { get; private set; }
+
+        public Task<OperationalHealthResult> EvaluateAsync(
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(result);
+        }
+    }
 }

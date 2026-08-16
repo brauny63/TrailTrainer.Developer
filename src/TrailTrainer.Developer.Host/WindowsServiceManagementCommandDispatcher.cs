@@ -7,16 +7,27 @@ public sealed class WindowsServiceManagementCommandDispatcher
     public const int InvalidCommandExitCode = 2;
 
     private readonly IWindowsServiceManager serviceManager;
+    private readonly Func<IOperationalHealthDiagnostics>? healthDiagnosticsFactory;
 
-    public WindowsServiceManagementCommandDispatcher(IWindowsServiceManager serviceManager)
+    public WindowsServiceManagementCommandDispatcher(
+        IWindowsServiceManager serviceManager,
+        Func<IOperationalHealthDiagnostics>? healthDiagnosticsFactory = null)
     {
         this.serviceManager = serviceManager ?? throw new ArgumentNullException(nameof(serviceManager));
+        this.healthDiagnosticsFactory = healthDiagnosticsFactory;
     }
 
     public static bool HasCommand(IReadOnlyList<string> arguments)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         return arguments.Count > 0;
+    }
+
+    public static bool IsHealthCommand(IReadOnlyList<string> arguments)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        return arguments.Count == 1 &&
+            arguments[0].Equals("health", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<int> RunAsync(
@@ -32,7 +43,7 @@ public sealed class WindowsServiceManagementCommandDispatcher
         if (arguments.Count != 1 || !IsKnownCommand(arguments[0]))
         {
             await error.WriteLineAsync(
-                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start|setup|provision|deprovision|restart");
+                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start|setup|provision|deprovision|restart|health");
             return InvalidCommandExitCode;
         }
 
@@ -105,6 +116,14 @@ public sealed class WindowsServiceManagementCommandDispatcher
                     await output.WriteLineAsync(
                         $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' restarted.");
                     break;
+                case "health":
+                    var diagnostics = healthDiagnosticsFactory?.Invoke()
+                        ?? throw new InvalidOperationException("Operational health diagnostics are unavailable.");
+                    var health = await diagnostics.EvaluateAsync(cancellationToken);
+                    await output.WriteLineAsync($"{health.Status}: {health.Reason}");
+                    return health.Status == OperationalHealthStatus.Healthy
+                        ? SuccessExitCode
+                        : OperationFailureExitCode;
             }
 
             return SuccessExitCode;
@@ -197,5 +216,6 @@ public sealed class WindowsServiceManagementCommandDispatcher
         command.Equals("setup", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("provision", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("deprovision", StringComparison.OrdinalIgnoreCase) ||
-        command.Equals("restart", StringComparison.OrdinalIgnoreCase);
+        command.Equals("restart", StringComparison.OrdinalIgnoreCase) ||
+        command.Equals("health", StringComparison.OrdinalIgnoreCase);
 }
