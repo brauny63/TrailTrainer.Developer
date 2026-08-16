@@ -210,6 +210,29 @@ public sealed class HostedAutomaticResumeServiceTests
     }
 
     [Fact]
+    public async Task StartAsync_RecoveredGitHubFailure_DoesNotEscapeHostBoundary()
+    {
+        var provider = new FakeRequestProvider { Request = WorkerRequest() };
+        var worker = new FakeWorker
+        {
+            Result = WorkerResult(),
+            ExceptionOnCall = 2,
+            Exception = new DeveloperTaskExecutionException(
+                "DEV-0007 GitHub retry failed",
+                new HttpRequestException("private repository unavailable"))
+        };
+
+        await new HostedAutomaticResumeService(
+            worker,
+            provider,
+            new NoOpIntake(),
+            new EnabledIntakeRequestProvider(),
+            strandedRecovery: new SuccessfulRecovery()).StartAsync(CancellationToken.None);
+
+        Assert.Equal(2, worker.CallCount);
+    }
+
+    [Fact]
     public async Task StopAsync_CompletesWithoutProviderOrWorkerInvocation()
     {
         using var source = new CancellationTokenSource();
@@ -412,6 +435,7 @@ public sealed class HostedAutomaticResumeServiceTests
         public AutomaticResumeWorkerResult? Result { get; init; }
         public Task<AutomaticResumeWorkerResult>? PendingResult { get; init; }
         public Exception? Exception { get; init; }
+        public int ExceptionOnCall { get; init; } = 1;
         public bool HonorCancellation { get; init; }
         public int CallCount { get; private set; }
         public AutomaticResumeWorkerRequest? Request { get; private set; }
@@ -432,7 +456,7 @@ public sealed class HostedAutomaticResumeServiceTests
                 cancellationToken.ThrowIfCancellationRequested();
             }
 
-            if (Exception is not null)
+            if (Exception is not null && CallCount == ExceptionOnCall)
             {
                 return Task.FromException<AutomaticResumeWorkerResult>(Exception);
             }
@@ -445,5 +469,13 @@ public sealed class HostedAutomaticResumeServiceTests
             ReturnedResult = Result;
             return Task.FromResult(Result!);
         }
+    }
+
+    private sealed class SuccessfulRecovery : IStrandedCodexStateRecovery
+    {
+        public Task<StrandedCodexStateRecoveryResult> TryRecoverAsync(
+            InitialDeveloperTaskIntakeRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new StrandedCodexStateRecoveryResult(true, "DEV-0007"));
     }
 }

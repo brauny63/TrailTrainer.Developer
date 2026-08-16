@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using System.Net.Http.Headers;
 using TrailTrainer.Developer.Core;
 using TrailTrainer.Developer.Git;
 using TrailTrainer.Developer.GitHub;
@@ -48,10 +49,25 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
             .Validate(static options => options.ApprovalPolicy is "untrusted" or "on-request" or "never", "CodexExecution:ApprovalPolicy must be untrusted, on-request, or never.")
             .Validate(static options => options.MaximumDiagnosticCharacters > 0, "CodexExecution:MaximumDiagnosticCharacters must be positive.")
             .ValidateOnStart();
+        services.AddOptions<GitHubApiOptions>()
+            .Bind(configuration.GetSection(GitHubApiOptions.SectionName))
+            .Validate(
+                static options => !string.IsNullOrWhiteSpace(options.Token),
+                "GitHub:Token is required. Inject it through environment configuration or a secret store.")
+            .Validate(
+                static options => options.Token.All(character => !char.IsWhiteSpace(character)),
+                "GitHub:Token must not contain whitespace.")
+            .ValidateOnStart();
 
         services.AddLogging();
 
-        services.TryAddSingleton<HttpClient>();
+        services.TryAddSingleton<HttpClient>(serviceProvider =>
+        {
+            var token = serviceProvider.GetRequiredService<IOptions<GitHubApiOptions>>().Value.Token;
+            var client = new HttpClient();
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            return client;
+        });
         services.TryAddSingleton<ICodexTaskExecutor, CodexCliTaskExecutor>();
         services.TryAddSingleton<ICodexCompatibilityProbe>(serviceProvider =>
             (CodexCliTaskExecutor)serviceProvider.GetRequiredService<ICodexTaskExecutor>());
@@ -64,6 +80,8 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
         services.TryAddSingleton<IPostMergeCleaner, LocalPostMergeCleaner>();
 
         services.TryAddSingleton<IPullRequestService, GitHubPullRequestService>();
+        services.TryAddSingleton<IGitHubRepositoryProbe>(serviceProvider =>
+            (GitHubPullRequestService)serviceProvider.GetRequiredService<IPullRequestService>());
         services.TryAddSingleton<IPullRequestStatusGate, GitHubPullRequestStatusGate>();
         services.TryAddSingleton<IPullRequestMerger, GitHubPullRequestMerger>();
 

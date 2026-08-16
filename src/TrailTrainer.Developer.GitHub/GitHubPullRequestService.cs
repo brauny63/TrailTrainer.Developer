@@ -5,7 +5,7 @@ using TrailTrainer.Developer.Core;
 
 namespace TrailTrainer.Developer.GitHub;
 
-public sealed class GitHubPullRequestService : IPullRequestService
+public sealed class GitHubPullRequestService : IPullRequestService, IGitHubRepositoryProbe
 {
     private static readonly Uri PublicApiBaseAddress = new("https://api.github.com/");
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -35,6 +35,8 @@ public sealed class GitHubPullRequestService : IPullRequestService
         {
             throw new ArgumentException("Head and base branch names must differ.", nameof(headBranch));
         }
+
+        EnsureAuthenticationConfigured();
 
         var endpoint = RepositoryPullRequestsEndpoint(repository);
         var query = $"?state=open&head={Uri.EscapeDataString(repository.Owner + ":" + headBranch)}" +
@@ -79,6 +81,40 @@ public sealed class GitHubPullRequestService : IPullRequestService
         return new PullRequestEnsureResult(ToPullRequestInfo(created), Created: true);
     }
 
+    public async Task ProbeAsync(
+        GitHubRepositoryIdentity repository,
+        bool checkOpenPullRequests = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(repository);
+        EnsureAuthenticationConfigured();
+
+        var repositoryEndpoint = new Uri(apiBaseAddress,
+            $"repos/{Uri.EscapeDataString(repository.Owner)}/{Uri.EscapeDataString(repository.Repository)}");
+        using var repositoryRequest = CreateRequest(HttpMethod.Get, repositoryEndpoint);
+        using var repositoryResponse = await httpClient.SendAsync(
+            repositoryRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        await EnsureSuccessAsync(repositoryResponse, "read repository metadata", cancellationToken);
+
+        if (checkOpenPullRequests)
+        {
+            using var pullsRequest = CreateRequest(HttpMethod.Get, new Uri(RepositoryPullRequestsEndpoint(repository) + "?state=open&per_page=1"));
+            using var pullsResponse = await httpClient.SendAsync(
+                pullsRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            await EnsureSuccessAsync(pullsResponse, "list open pull requests", cancellationToken);
+        }
+    }
+
+    private void EnsureAuthenticationConfigured()
+    {
+        if (httpClient.DefaultRequestHeaders.Authorization is null)
+        {
+            throw new GitHubApiException(
+                GitHubApiFailureKind.AuthenticationMissing,
+                "GitHub authentication is missing. Configure GitHub:Token through an environment variable or secret store; private repositories cannot be accessed anonymously.");
+        }
+    }
+
     private Uri RepositoryPullRequestsEndpoint(GitHubRepositoryIdentity repository)
     {
         var relative = $"repos/{Uri.EscapeDataString(repository.Owner)}/" +
@@ -118,14 +154,38 @@ public sealed class GitHubPullRequestService : IPullRequestService
         cancellationToken.ThrowIfCancellationRequested();
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException(
-                $"GitHub failed to {operation}: HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).",
-                inner: null,
-                response.StatusCode);
+            var status = response.StatusCode;
+            var (kind, diagnostic) = status switch
+            {
+                System.Net.HttpStatusCode.Unauthorized => (
+                    GitHubApiFailureKind.AuthenticationRejected,
+                    "the configured credential was rejected"),
+                System.Net.HttpStatusCode.NotFound => (
+                    GitHubApiFailureKind.RepositoryNotFoundOrPrivateAccessDenied,
+                    "the repository was not found, or the authenticated identity lacks access to this private repository"),
+                System.Net.HttpStatusCode.TooManyRequests => (
+                    GitHubApiFailureKind.RateLimited,
+                    "the GitHub API rate limit was exceeded; retry after the server reset time"),
+                System.Net.HttpStatusCode.Forbidden when IsRateLimited(response) => (
+                    GitHubApiFailureKind.RateLimited,
+                    "the GitHub API rate limit was exceeded; retry after the server reset time"),
+                System.Net.HttpStatusCode.Forbidden => (
+                    GitHubApiFailureKind.InsufficientRepositoryAccess,
+                    "the authenticated identity has insufficient repository permission"),
+                _ => (GitHubApiFailureKind.HttpFailure, "GitHub returned an HTTP failure")
+            };
+            throw new GitHubApiException(
+                kind,
+                $"GitHub failed to {operation}: HTTP {(int)status} ({response.ReasonPhrase}); {diagnostic}.",
+                status);
         }
 
         await Task.CompletedTask;
     }
+
+    private static bool IsRateLimited(HttpResponseMessage response) =>
+        response.Headers.TryGetValues("X-RateLimit-Remaining", out var values) &&
+        values.Any(value => string.Equals(value, "0", StringComparison.Ordinal));
 
     private static PullRequestInfo ToPullRequestInfo(GitHubPullRequestDto pullRequest)
     {

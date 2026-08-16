@@ -4,5 +4,6 @@ public enum CodexExecutionPhase
 {
     BranchCreated,
     CodexSucceeded,
-    ReviewRepairRequired
+    ReviewRepairRequired,
+    CompletionSucceeded
 }

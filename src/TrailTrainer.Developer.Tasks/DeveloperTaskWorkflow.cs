@@ -126,23 +126,56 @@ public sealed class DeveloperTaskWorkflow : IDeveloperTaskWorkflow
         }
         }
 
-        var completion = await gatedCompleter.CompleteAsync(
-            developerTaskFilePath,
-            repositoryDirectoryPath,
-            expectedRepositoryName,
-            commitMessage,
-            gitRemoteName,
-            setUpstream,
-            cancellationToken);
+        DeveloperTaskGatedCompletionResult completion;
+        if (executionState?.Phase == CodexExecutionPhase.CompletionSucceeded)
+        {
+            completion = executionState.Completion
+                ?? throw new InvalidDataException("Persisted completion state has no completion payload.");
+        }
+        else
+        {
+            completion = await gatedCompleter.CompleteAsync(
+                developerTaskFilePath,
+                repositoryDirectoryPath,
+                expectedRepositoryName,
+                commitMessage,
+                gitRemoteName,
+                setUpstream,
+                cancellationToken);
+            if (codexStateStore is not null)
+            {
+                executionState = executionState! with
+                {
+                    Phase = CodexExecutionPhase.CompletionSucceeded,
+                    Completion = completion
+                };
+                await codexStateStore.SaveAsync(executionState, cancellationToken);
+            }
+        }
 
-        var pullRequest = await pullRequestService.EnsureOpenAsync(
-            gitHubRepository,
-            completion.Completion.BranchName,
-            pullRequestBaseBranch,
-            CreatePullRequestTitle(task),
-            pullRequestBody,
-            pullRequestDraft,
-            cancellationToken);
+        PullRequestEnsureResult pullRequest;
+        try
+        {
+            pullRequest = await pullRequestService.EnsureOpenAsync(
+                gitHubRepository,
+                completion.Completion.BranchName,
+                pullRequestBaseBranch,
+                CreatePullRequestTitle(task),
+                pullRequestBody,
+                pullRequestDraft,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidDataException)
+        {
+            throw new DeveloperTaskExecutionException(
+                $"Task {taskId} Pull Request ensure failed in a controlled, retryable manner for " +
+                $"'{gitHubRepository.Owner}/{gitHubRepository.Repository}': {exception.Message}",
+                exception);
+        }
 
         if (codexStateStore is not null) await codexStateStore.DeleteAsync(taskId, cancellationToken);
 

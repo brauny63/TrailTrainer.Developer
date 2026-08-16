@@ -167,7 +167,8 @@ public sealed class InitialDeveloperTaskIntakeTests
             {
                 [$"{DeveloperProductionRuntimeOptions.SectionName}:LifecycleStateStorageDirectory"] =
                     Path.Combine(fixture.Root, enabled ? "enabled-state" : "disabled-state"),
-                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run"
+                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run",
+                [$"{GitHubApiOptions.SectionName}:Token"] = "test-token"
             };
             if (enabled)
             {
