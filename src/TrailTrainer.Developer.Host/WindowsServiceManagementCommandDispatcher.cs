@@ -32,7 +32,7 @@ public sealed class WindowsServiceManagementCommandDispatcher
         if (arguments.Count != 1 || !IsKnownCommand(arguments[0]))
         {
             await error.WriteLineAsync(
-                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start");
+                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start|setup");
             return InvalidCommandExitCode;
         }
 
@@ -79,6 +79,12 @@ public sealed class WindowsServiceManagementCommandDispatcher
                     await output.WriteLineAsync(
                         $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' delayed automatic start configured.");
                     break;
+                case "setup":
+                    await serviceManager.ConfigureDelayedStartAsync(cancellationToken);
+                    await serviceManager.ConfigureRecoveryAsync(cancellationToken);
+                    await output.WriteLineAsync(
+                        $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' operational setup configured.");
+                    break;
             }
 
             return SuccessExitCode;
@@ -101,5 +107,6 @@ public sealed class WindowsServiceManagementCommandDispatcher
         command.Equals("stop", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("status", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("recovery", StringComparison.OrdinalIgnoreCase) ||
-        command.Equals("delayed-start", StringComparison.OrdinalIgnoreCase);
+        command.Equals("delayed-start", StringComparison.OrdinalIgnoreCase) ||
+        command.Equals("setup", StringComparison.OrdinalIgnoreCase);
 }
