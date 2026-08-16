@@ -32,7 +32,7 @@ public sealed class WindowsServiceManagementCommandDispatcher
         if (arguments.Count != 1 || !IsKnownCommand(arguments[0]))
         {
             await error.WriteLineAsync(
-                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start|setup");
+                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start|setup|provision");
             return InvalidCommandExitCode;
         }
 
@@ -41,12 +41,9 @@ public sealed class WindowsServiceManagementCommandDispatcher
             switch (arguments[0].ToLowerInvariant())
             {
                 case "install":
-                    if (string.IsNullOrWhiteSpace(executablePath))
-                    {
-                        throw new InvalidOperationException("The current executable path is unavailable.");
-                    }
-
-                    await serviceManager.InstallAsync(executablePath, cancellationToken);
+                    await serviceManager.InstallAsync(
+                        RequireExecutablePath(executablePath),
+                        cancellationToken);
                     await output.WriteLineAsync(
                         $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' installed.");
                     break;
@@ -80,10 +77,23 @@ public sealed class WindowsServiceManagementCommandDispatcher
                         $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' delayed automatic start configured.");
                     break;
                 case "setup":
-                    await serviceManager.ConfigureDelayedStartAsync(cancellationToken);
-                    await serviceManager.ConfigureRecoveryAsync(cancellationToken);
+                    await ConfigureOperationalSetupAsync(cancellationToken);
                     await output.WriteLineAsync(
                         $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' operational setup configured.");
+                    break;
+                case "provision":
+                    if (await serviceManager.GetStatusAsync(cancellationToken) != WindowsServiceState.NotInstalled)
+                    {
+                        throw new InvalidOperationException(
+                            $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' already exists.");
+                    }
+
+                    await serviceManager.InstallAsync(
+                        RequireExecutablePath(executablePath),
+                        cancellationToken);
+                    await ConfigureOperationalSetupAsync(cancellationToken);
+                    await output.WriteLineAsync(
+                        $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' provisioned and stopped.");
                     break;
             }
 
@@ -100,6 +110,17 @@ public sealed class WindowsServiceManagementCommandDispatcher
         }
     }
 
+    private async Task ConfigureOperationalSetupAsync(CancellationToken cancellationToken)
+    {
+        await serviceManager.ConfigureDelayedStartAsync(cancellationToken);
+        await serviceManager.ConfigureRecoveryAsync(cancellationToken);
+    }
+
+    private static string RequireExecutablePath(string? executablePath) =>
+        string.IsNullOrWhiteSpace(executablePath)
+            ? throw new InvalidOperationException("The current executable path is unavailable.")
+            : executablePath;
+
     private static bool IsKnownCommand(string command) =>
         command.Equals("install", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("uninstall", StringComparison.OrdinalIgnoreCase) ||
@@ -108,5 +129,6 @@ public sealed class WindowsServiceManagementCommandDispatcher
         command.Equals("status", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("recovery", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("delayed-start", StringComparison.OrdinalIgnoreCase) ||
-        command.Equals("setup", StringComparison.OrdinalIgnoreCase);
+        command.Equals("setup", StringComparison.OrdinalIgnoreCase) ||
+        command.Equals("provision", StringComparison.OrdinalIgnoreCase);
 }

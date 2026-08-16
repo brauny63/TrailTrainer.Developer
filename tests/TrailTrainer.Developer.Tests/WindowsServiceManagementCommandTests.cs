@@ -492,6 +492,140 @@ public sealed class WindowsServiceManagementCommandTests
         Assert.Empty(runner.Calls);
     }
 
+    [Fact]
+    public async Task Provision_ChecksAbsenceThenInstallsAndReusesSetupInOrder()
+    {
+        var manager = new RecordingServiceManager { Status = WindowsServiceState.NotInstalled };
+        var output = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+        const string executablePath = @"C:\Program Files\TrailTrainer\TrailTrainer.Developer.Host.exe";
+
+        var exitCode = await dispatcher.RunAsync(
+            ["provision"], executablePath, output, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal(
+            [Operation.Status, Operation.Install, Operation.DelayedStart, Operation.Recovery],
+            manager.Operations);
+        Assert.Equal(executablePath, manager.InstalledExecutablePath);
+        Assert.DoesNotContain(Operation.Start, manager.Operations);
+        Assert.DoesNotContain(Operation.Stop, manager.Operations);
+        Assert.Contains("provisioned and stopped", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Provision_ExistingServicePreventsInstallAndSetup()
+    {
+        var manager = new RecordingServiceManager { Status = WindowsServiceState.Stopped };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(["provision"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status], manager.Operations);
+        Assert.Contains("already exists", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Provision_InstallFailurePreventsSetupWithoutRetry()
+    {
+        var manager = new RecordingServiceManager
+        {
+            Status = WindowsServiceState.NotInstalled,
+            FailureOperation = Operation.Install,
+            Exception = new IOException("install failed")
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(["provision"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Install], manager.Operations);
+        Assert.Contains("install failed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(Operation.DelayedStart)]
+    [InlineData(Operation.Recovery)]
+    public async Task Provision_SetupFailureIsSurfacedWithoutUninstallRollback(Operation failureOperation)
+    {
+        var manager = new RecordingServiceManager
+        {
+            Status = WindowsServiceState.NotInstalled,
+            FailureOperation = failureOperation,
+            Exception = new IOException($"{failureOperation} failed")
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(["provision"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        var expected = failureOperation == Operation.DelayedStart
+            ? new[] { Operation.Status, Operation.Install, Operation.DelayedStart }
+            : new[] { Operation.Status, Operation.Install, Operation.DelayedStart, Operation.Recovery };
+        Assert.Equal(expected, manager.Operations);
+        Assert.DoesNotContain(Operation.Uninstall, manager.Operations);
+        Assert.DoesNotContain(Operation.Start, manager.Operations);
+        Assert.Contains($"{failureOperation} failed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Provision_InvalidArgumentsReturnInvalidCommandExitCode()
+    {
+        var manager = new RecordingServiceManager();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["provision", "extra"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.InvalidCommandExitCode, exitCode);
+        Assert.Empty(manager.Operations);
+    }
+
+    [Fact]
+    public async Task Provision_NonWindowsFailsBeforeProcessExecution()
+    {
+        var runner = new RecordingProcessRunner();
+        var manager = new ScWindowsServiceManager(runner, new StubPlatform(false));
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["provision"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Empty(runner.Calls);
+    }
+
+    [Fact]
+    public async Task Provision_WithProductionManagerUsesExistingScmOperationsOnly()
+    {
+        var runner = new RecordingProcessRunner(
+            new WindowsServiceProcessResult(1060, string.Empty, string.Empty),
+            new WindowsServiceProcessResult(1060, string.Empty, string.Empty),
+            Success(),
+            QueryState(1),
+            Success(),
+            QueryState(1),
+            Success(),
+            Success());
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(CreateManager(runner));
+
+        var exitCode = await dispatcher.RunAsync(
+            ["provision"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal(
+            ["query", "query", "create", "query", "config", "query", "failure", "failureflag"],
+            runner.Calls.Select(call => call.Arguments[0]));
+        Assert.DoesNotContain(runner.Calls, call =>
+            call.Arguments[0] is "start" or "stop" or "delete");
+        Assert.All(runner.Calls, call =>
+            Assert.Contains("TrailTrainer Developer", call.Arguments));
+    }
+
     private static ScWindowsServiceManager CreateManager(IWindowsServiceProcessRunner runner) =>
         new(runner, new StubPlatform(true));
 
