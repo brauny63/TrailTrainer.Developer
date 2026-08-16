@@ -65,6 +65,7 @@ public sealed class DeveloperTaskWorkflow : IDeveloperTaskWorkflow
         var configuredStatusProvider = repositoryStatusProvider!;
         executionState = await codexStateStore.LoadAsync(taskId, cancellationToken);
         var resumedBranchCreated = executionState?.Phase == CodexExecutionPhase.BranchCreated;
+        var reviewRepairRequired = executionState?.Phase == CodexExecutionPhase.ReviewRepairRequired;
         if (executionState is null)
         {
             ValidateTaskRepositoryIdentity(task, expectedRepositoryName, gitHubRepository);
@@ -86,16 +87,16 @@ public sealed class DeveloperTaskWorkflow : IDeveloperTaskWorkflow
             throw new InvalidOperationException($"Persisted Codex execution state for '{taskId}' does not match this task and repository.");
         }
 
-        if (executionState.Phase == CodexExecutionPhase.BranchCreated)
+        if (executionState.Phase is CodexExecutionPhase.BranchCreated or CodexExecutionPhase.ReviewRepairRequired)
         {
-            if (resumedBranchCreated)
+            if (resumedBranchCreated || reviewRepairRequired)
             {
                 var retryStatus = await configuredStatusProvider.GetStatusAsync(repositoryDirectoryPath, cancellationToken);
-                ValidateSafeCodexBranch(retryStatus, task, repositoryDirectoryPath, requireClean: true, "pre-execution retry");
+                ValidateSafeCodexBranch(retryStatus, task, repositoryDirectoryPath, requireClean: !reviewRepairRequired, "pre-execution retry");
             }
 
             var codex = await configuredExecutor.ExecuteAsync(
-                new CodexTaskExecutionRequest(repositoryDirectoryPath, developerTaskFilePath), cancellationToken);
+                new CodexTaskExecutionRequest(repositoryDirectoryPath, developerTaskFilePath, reviewRepairRequired), cancellationToken);
             if (!codex.Succeeded)
             {
                 var reason = codex.FailureKind == CodexExecutionFailureKind.RunnerPipeTimeout
@@ -111,6 +112,11 @@ public sealed class DeveloperTaskWorkflow : IDeveloperTaskWorkflow
             }
             catch (DeveloperTaskExecutionException exception)
             {
+                if (exception.InnerException is InvalidDataException)
+                {
+                    executionState = executionState with { Phase = CodexExecutionPhase.ReviewRepairRequired };
+                    await codexStateStore.SaveAsync(executionState, cancellationToken);
+                }
                 throw new DeveloperTaskExecutionException(
                     $"{exception.Message} Codex stdout: {codex.StandardOutput.Trim()}; Codex stderr: {codex.StandardError.Trim()}",
                     exception);

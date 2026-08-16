@@ -217,6 +217,20 @@ public sealed class CodexTaskExecutionIntegrationTests
     }
 
     [Fact]
+    public void CodexInstruction_EmitsTheCompleteExactReviewContract()
+    {
+        var instruction = new CodexTaskExecutionRequest("repository", "DEV-0055.md").Instruction;
+
+        foreach (var heading in DeveloperReviewContract.RequiredSectionNames)
+            Assert.Contains($"## {heading}", instruction, StringComparison.Ordinal);
+        Assert.Contains("## Deviations from DEV-NNNN", instruction, StringComparison.Ordinal);
+        Assert.Contains("Successful. N warnings, N errors.", instruction, StringComparison.Ordinal);
+        Assert.Contains("Successful. N passed, N failed, N skipped.", instruction, StringComparison.Ordinal);
+        Assert.Contains("No commit created.", instruction, StringComparison.Ordinal);
+        Assert.Contains("No push performed.", instruction, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task CodexFailure_BlocksCompletionPushAndPullRequestAndRetainsRetryablePhase()
     {
         var fixture = new Fixture();
@@ -334,6 +348,26 @@ public sealed class CodexTaskExecutionIntegrationTests
         Assert.Equal(CodexExecutionPhase.BranchCreated, fixture.Store.State!.Phase);
         Assert.Equal(0, fixture.Completer.Calls);
         Assert.Equal(0, fixture.PullRequests.Calls);
+    }
+
+    [Fact]
+    public async Task InvalidReviewParsing_PreservesDirtyImplementationAndRetriesReviewRepairOnly()
+    {
+        var fixture = new Fixture(7);
+        fixture.ReviewParser.Exception = new InvalidDataException("required section is missing");
+
+        await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
+
+        Assert.Equal(CodexExecutionPhase.ReviewRepairRequired, fixture.Store.State!.Phase);
+        fixture.ReviewParser.Exception = null;
+        fixture.Status.Result = new GitRepositoryStatus(true, "repository", "feature/dev-0007", true);
+        await fixture.ExecuteAsync();
+
+        Assert.True(fixture.Executor.Request!.RepairReviewOnly);
+        Assert.Contains("repair only the invalid review", fixture.Executor.Request.Instruction, StringComparison.Ordinal);
+        Assert.Contains("do not reset, clean, stash, overwrite, or duplicate implementation work", fixture.Executor.Request.Instruction, StringComparison.Ordinal);
+        Assert.Equal(2, fixture.Executor.Calls);
+        Assert.Equal(1, fixture.Completer.Calls);
     }
 
     [Theory]
