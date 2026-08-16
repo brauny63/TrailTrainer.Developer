@@ -4,7 +4,6 @@ using TrailTrainer.Developer.Host;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using TrailTrainer.Developer.FakeCodexCli;
-using System.Runtime.InteropServices;
 
 namespace TrailTrainer.Developer.Tests;
 
@@ -18,11 +17,9 @@ public sealed class CodexTaskExecutionIntegrationTests
         Directory.CreateDirectory(repository);
         try
         {
-            var helper = typeof(Program).Assembly.Location;
             var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
             {
-                ExecutablePath = DotNetHostPath,
-                AdditionalArguments = [helper],
+                ExecutablePath = FakeCodexCliPath,
                 UserProfileDirectory = profile
             }));
 
@@ -34,7 +31,7 @@ public sealed class CodexTaskExecutionIntegrationTests
             Assert.Contains($"USERPROFILE={Path.GetFullPath(profile)}", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
             Assert.Contains($"APPDATA={Path.Combine(profile, "AppData", "Roaming")}", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("fake-codex-stderr", result.StandardError, StringComparison.Ordinal);
-            Assert.Contains("--sandbox|workspace-write|--ask-for-approval|never|--skip-git-repo-check", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("--ask-for-approval|never|exec|--sandbox|workspace-write|--skip-git-repo-check", result.StandardOutput, StringComparison.Ordinal);
         }
         finally
         {
@@ -51,14 +48,13 @@ public sealed class CodexTaskExecutionIntegrationTests
         {
             var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
             {
-                ExecutablePath = DotNetHostPath,
-                AdditionalArguments = [typeof(Program).Assembly.Location],
+                ExecutablePath = FakeCodexCliPath,
                 SandboxMode = "danger-full-access",
                 ApprovalPolicy = "never",
                 UserProfileDirectory = repository
             }));
             var result = await executor.ExecuteAsync(new CodexTaskExecutionRequest(repository, "mode"));
-            Assert.Contains("--sandbox|danger-full-access|--ask-for-approval|never", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("--ask-for-approval|never|exec|--sandbox|danger-full-access", result.StandardOutput, StringComparison.Ordinal);
             Assert.DoesNotContain("dangerously-bypass-approvals-and-sandbox", result.StandardOutput, StringComparison.Ordinal);
         }
         finally { Directory.Delete(repository, recursive: true); }
@@ -69,8 +65,8 @@ public sealed class CodexTaskExecutionIntegrationTests
     {
         var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
         {
-            ExecutablePath = DotNetHostPath,
-            AdditionalArguments = [typeof(Program).Assembly.Location, "fake-runner-pipe-timeout"],
+            ExecutablePath = FakeCodexCliPath,
+            AdditionalArguments = ["fake-runner-pipe-timeout"],
             UserProfileDirectory = Path.GetTempPath()
         }));
         var result = await executor.ExecuteAsync(new CodexTaskExecutionRequest(Path.GetTempPath(), "pipe"));
@@ -82,8 +78,8 @@ public sealed class CodexTaskExecutionIntegrationTests
     {
         var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
         {
-            ExecutablePath = DotNetHostPath,
-            AdditionalArguments = [typeof(Program).Assembly.Location, "fake-probe-timeout"],
+            ExecutablePath = FakeCodexCliPath,
+            AdditionalArguments = ["fake-probe-timeout"],
             UserProfileDirectory = Path.GetTempPath(),
             Timeout = TimeSpan.FromMinutes(1),
             CompatibilityProbeTimeout = TimeSpan.FromMilliseconds(200)
@@ -104,8 +100,7 @@ public sealed class CodexTaskExecutionIntegrationTests
         {
             var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
             {
-                ExecutablePath = DotNetHostPath,
-                AdditionalArguments = [typeof(Program).Assembly.Location],
+                ExecutablePath = FakeCodexCliPath,
                 UserProfileDirectory = Path.Combine(repository, new string('p', 80)),
                 MaximumDiagnosticCharacters = 64
             }), logs);
@@ -135,8 +130,7 @@ public sealed class CodexTaskExecutionIntegrationTests
         {
             var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
             {
-                ExecutablePath = DotNetHostPath,
-                AdditionalArguments = [typeof(Program).Assembly.Location],
+                ExecutablePath = FakeCodexCliPath,
                 UserProfileDirectory = repository,
                 Timeout = TimeSpan.FromMilliseconds(300)
             }));
@@ -164,8 +158,7 @@ public sealed class CodexTaskExecutionIntegrationTests
         {
             var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
             {
-                ExecutablePath = DotNetHostPath,
-                AdditionalArguments = [typeof(Program).Assembly.Location],
+                ExecutablePath = FakeCodexCliPath,
                 UserProfileDirectory = repository,
                 Timeout = TimeSpan.FromMinutes(1)
             }));
@@ -600,6 +593,7 @@ public sealed class CodexTaskExecutionIntegrationTests
         }
     }
 
-    private static string DotNetHostPath => Path.GetFullPath(Path.Combine(
-        RuntimeEnvironment.GetRuntimeDirectory(), "..", "..", "..", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet"));
+    private static string FakeCodexCliPath => Path.Combine(
+        Path.GetDirectoryName(typeof(Program).Assembly.Location)!,
+        $"{Path.GetFileNameWithoutExtension(typeof(Program).Assembly.Location)}{(OperatingSystem.IsWindows() ? ".exe" : string.Empty)}");
 }

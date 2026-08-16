@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using TrailTrainer.Developer.Core;
@@ -59,12 +59,12 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor, ICodexCompatibili
             RedirectStandardOutput = true,
             RedirectStandardError = true
         };
+        startInfo.ArgumentList.Add("--ask-for-approval");
+        startInfo.ArgumentList.Add(options.ApprovalPolicy);
         startInfo.ArgumentList.Add("exec");
         foreach (var argument in options.AdditionalArguments) startInfo.ArgumentList.Add(argument);
         startInfo.ArgumentList.Add("--sandbox");
         startInfo.ArgumentList.Add(options.SandboxMode);
-        startInfo.ArgumentList.Add("--ask-for-approval");
-        startInfo.ArgumentList.Add(options.ApprovalPolicy);
         startInfo.ArgumentList.Add("--skip-git-repo-check");
         startInfo.ArgumentList.Add(instruction);
         ApplyUserProfileEnvironment(startInfo);
