@@ -17,6 +17,7 @@ public sealed class WindowsServiceManagementCommandTests
     [InlineData("stop", Operation.Stop)]
     [InlineData("status", Operation.Status)]
     [InlineData("recovery", Operation.Recovery)]
+    [InlineData("delayed-start", Operation.DelayedStart)]
     public async Task ManagementCommand_DispatchesExactlyOnce(string command, Operation expected)
     {
         var manager = new RecordingServiceManager { Status = WindowsServiceState.Running };
@@ -305,6 +306,67 @@ public sealed class WindowsServiceManagementCommandTests
         Assert.Equal(3, runner.Calls.Count);
     }
 
+    [Fact]
+    public async Task DelayedStart_ChecksExistenceAndConfiguresAutomaticDelayedModeOnly()
+    {
+        var runner = new RecordingProcessRunner(QueryState(1), Success());
+        var manager = CreateManager(runner);
+
+        await manager.ConfigureDelayedStartAsync();
+
+        Assert.Equal(2, runner.Calls.Count);
+        Assert.All(runner.Calls, call => Assert.Equal("sc.exe", call.Executable));
+        Assert.Equal(["query", "TrailTrainer Developer"], runner.Calls[0].Arguments);
+        Assert.Equal(
+            ["config", "TrailTrainer Developer", "start=", "delayed-auto"],
+            runner.Calls[1].Arguments);
+        Assert.DoesNotContain(runner.Calls, call =>
+            call.Arguments[0] is "start" or "stop");
+    }
+
+    [Fact]
+    public async Task DelayedStart_MissingServiceFailsWithoutConfigurationAttempt()
+    {
+        var runner = new RecordingProcessRunner(
+            new WindowsServiceProcessResult(1060, string.Empty, string.Empty));
+        var manager = CreateManager(runner);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.ConfigureDelayedStartAsync());
+
+        Assert.Contains("is not installed", exception.Message, StringComparison.Ordinal);
+        var call = Assert.Single(runner.Calls);
+        Assert.Equal(["query", "TrailTrainer Developer"], call.Arguments);
+    }
+
+    [Fact]
+    public async Task DelayedStart_NonWindowsFailsBeforeProcessExecution()
+    {
+        var runner = new RecordingProcessRunner();
+        var manager = new ScWindowsServiceManager(runner, new StubPlatform(false));
+
+        await Assert.ThrowsAsync<PlatformNotSupportedException>(() =>
+            manager.ConfigureDelayedStartAsync());
+
+        Assert.Empty(runner.Calls);
+    }
+
+    [Fact]
+    public async Task DelayedStart_ScmFailureIsSurfacedWithoutRetry()
+    {
+        var runner = new RecordingProcessRunner(
+            QueryState(4),
+            new WindowsServiceProcessResult(5, string.Empty, "access denied"));
+        var manager = CreateManager(runner);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.ConfigureDelayedStartAsync());
+
+        Assert.Contains("exit code 5", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("access denied", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(2, runner.Calls.Count);
+    }
+
     private static ScWindowsServiceManager CreateManager(IWindowsServiceProcessRunner runner) =>
         new(runner, new StubPlatform(true));
 
@@ -324,7 +386,8 @@ public sealed class WindowsServiceManagementCommandTests
         Start,
         Stop,
         Status,
-        Recovery
+        Recovery,
+        DelayedStart
     }
 
     private sealed class RecordingServiceManager : IWindowsServiceManager
@@ -344,6 +407,8 @@ public sealed class WindowsServiceManagementCommandTests
         public Task StartAsync(CancellationToken cancellationToken = default) => Record(Operation.Start);
         public Task StopAsync(CancellationToken cancellationToken = default) => Record(Operation.Stop);
         public Task ConfigureRecoveryAsync(CancellationToken cancellationToken = default) => Record(Operation.Recovery);
+        public Task ConfigureDelayedStartAsync(CancellationToken cancellationToken = default) =>
+            Record(Operation.DelayedStart);
 
         public Task<WindowsServiceState> GetStatusAsync(CancellationToken cancellationToken = default)
         {

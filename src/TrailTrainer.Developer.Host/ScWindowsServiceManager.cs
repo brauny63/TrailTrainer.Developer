@@ -104,6 +104,26 @@ public sealed partial class ScWindowsServiceManager : IWindowsServiceManager
             cancellationToken);
     }
 
+    public async Task ConfigureDelayedStartAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureWindows();
+        if (await GetStatusAsync(cancellationToken) == WindowsServiceState.NotInstalled)
+        {
+            throw new InvalidOperationException(
+                $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' is not installed.");
+        }
+
+        await RunRequiredAsync(
+            "delayed automatic start configuration",
+            [
+                "config",
+                AutomaticResumeWindowsServiceExtensions.ServiceName,
+                "start=",
+                "delayed-auto"
+            ],
+            cancellationToken);
+    }
+
     public async Task<WindowsServiceState> GetStatusAsync(
         CancellationToken cancellationToken = default)
     {
