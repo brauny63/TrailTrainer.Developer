@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using TrailTrainer.Developer.Core;
@@ -173,3 +173,4 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor, ICodexCompatibili
         if (!process.HasExited) process.Kill(entireProcessTree: true);
     }
 }
+
