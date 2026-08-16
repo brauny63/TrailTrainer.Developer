@@ -2,6 +2,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TrailTrainer.Developer.Core\TrailTrainer.Developer.Core.csproj" />
+    <ProjectReference Include="..\TrailTrainer.Developer.Git\TrailTrainer.Developer.Git.csproj" />
+    <ProjectReference Include="..\TrailTrainer.Developer.GitHub\TrailTrainer.Developer.GitHub.csproj" />
+    <ProjectReference Include="..\TrailTrainer.Developer.Persistence\TrailTrainer.Developer.Persistence.csproj" />
     <ProjectReference Include="..\TrailTrainer.Developer.Tasks\TrailTrainer.Developer.Tasks.csproj" />
   </ItemGroup>
 
