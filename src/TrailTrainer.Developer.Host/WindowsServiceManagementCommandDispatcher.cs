@@ -32,7 +32,7 @@ public sealed class WindowsServiceManagementCommandDispatcher
         if (arguments.Count != 1 || !IsKnownCommand(arguments[0]))
         {
             await error.WriteLineAsync(
-                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status");
+                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery");
             return InvalidCommandExitCode;
         }
 
@@ -69,6 +69,11 @@ public sealed class WindowsServiceManagementCommandDispatcher
                     var state = await serviceManager.GetStatusAsync(cancellationToken);
                     await output.WriteLineAsync(state.ToString());
                     break;
+                case "recovery":
+                    await serviceManager.ConfigureRecoveryAsync(cancellationToken);
+                    await output.WriteLineAsync(
+                        $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' recovery policy configured.");
+                    break;
             }
 
             return SuccessExitCode;
@@ -89,5 +94,6 @@ public sealed class WindowsServiceManagementCommandDispatcher
         command.Equals("uninstall", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("start", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("stop", StringComparison.OrdinalIgnoreCase) ||
-        command.Equals("status", StringComparison.OrdinalIgnoreCase);
+        command.Equals("status", StringComparison.OrdinalIgnoreCase) ||
+        command.Equals("recovery", StringComparison.OrdinalIgnoreCase);
 }
