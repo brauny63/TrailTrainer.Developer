@@ -42,11 +42,11 @@ public sealed class HostedAutomaticResumeService : IHostedService
             {
                 await intake.ExecuteAsync(intakeRequest, cancellationToken);
             }
-            catch (InvalidOperationException exception)
+            catch (DeveloperTaskExecutionException exception)
             {
                 logger?.LogError(
                     exception,
-                    "Initial Developer Task intake failed for repository {RepositoryPath}.",
+                    "Initial Developer Task execution failed in a controlled manner for repository {RepositoryPath}.",
                     intakeRequest.RepositoryPath);
                 return;
             }
@@ -54,7 +54,16 @@ public sealed class HostedAutomaticResumeService : IHostedService
 
         var request = requestProvider.GetRequest()
             ?? throw new InvalidOperationException("The automatic resume worker request provider returned null.");
-        await worker.RunAsync(request, cancellationToken);
+        try
+        {
+            await worker.RunAsync(request, cancellationToken);
+        }
+        catch (DeveloperTaskExecutionException exception)
+        {
+            logger?.LogError(
+                exception,
+                "Automatic Developer Task resume failed in a controlled manner.");
+        }
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
