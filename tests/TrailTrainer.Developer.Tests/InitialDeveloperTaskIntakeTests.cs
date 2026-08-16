@@ -64,8 +64,26 @@ public sealed class InitialDeveloperTaskIntakeTests
             fixture.Intake.ExecuteAsync(fixture.Request()));
 
         Assert.Contains("uncommitted changes", exception.Message, StringComparison.Ordinal);
-        Assert.Equal(0, fixture.Discovery.Calls);
+        Assert.Equal(1, fixture.Discovery.Calls);
         Assert.Equal(0, fixture.Lifecycle.Calls);
+    }
+
+    [Fact]
+    public async Task DirtyMatchingReviewRepair_ResumesExistingTaskWithoutStartingAnother()
+    {
+        using var fixture = new Fixture();
+        var task = fixture.Descriptor(7);
+        fixture.Discovery.Tasks = [task, fixture.Descriptor(56)];
+        fixture.Status.Result = new GitRepositoryStatus(true, fixture.Root, "feature/dev-0007", true);
+        fixture.CodexStates.States["DEV-0007"] = new CodexExecutionState(
+            "DEV-0007", fixture.Root, task.FilePath, CodexExecutionPhase.ReviewRepairRequired);
+
+        var result = await fixture.Intake.ExecuteAsync(fixture.Request());
+
+        Assert.Equal(InitialDeveloperTaskIntakeState.Started, result.State);
+        Assert.Same(task, result.SelectedTask);
+        Assert.Equal(1, fixture.Lifecycle.Calls);
+        Assert.Equal("DEV-0007", fixture.Lifecycle.Request!.TaskId);
     }
 
     [Fact]
@@ -211,10 +229,12 @@ public sealed class InitialDeveloperTaskIntakeTests
                 Result = new GitRepositoryStatus(true, Root, "main", false)
             };
             Lifecycle = new FakePersistedLifecycle();
+            CodexStates = new FakeCodexStateStore();
             Intake = new InitialDeveloperTaskIntake(
                 Candidates,
                 Discovery,
                 Status,
+                CodexStates,
                 Lifecycle,
                 NullLogger<InitialDeveloperTaskIntake>.Instance);
         }
@@ -224,6 +244,7 @@ public sealed class InitialDeveloperTaskIntakeTests
         public FakeDiscovery Discovery { get; }
         public FakeStatusProvider Status { get; }
         public FakePersistedLifecycle Lifecycle { get; }
+        public FakeCodexStateStore CodexStates { get; }
         public InitialDeveloperTaskIntake Intake { get; }
 
         public InitialDeveloperTaskIntakeRequest Request(
@@ -316,5 +337,19 @@ public sealed class InitialDeveloperTaskIntakeTests
         public Task<PersistedDeveloperLifecycleResumeResult> ResumeAsync(
             PersistedDeveloperLifecycleResumeRequest request,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    }
+
+    private sealed class FakeCodexStateStore : ICodexExecutionStateStore
+    {
+        public Dictionary<string, CodexExecutionState> States { get; } = new(StringComparer.Ordinal);
+
+        public Task<CodexExecutionState?> LoadAsync(string taskId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(States.GetValueOrDefault(taskId));
+
+        public Task SaveAsync(CodexExecutionState state, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task DeleteAsync(string taskId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 }

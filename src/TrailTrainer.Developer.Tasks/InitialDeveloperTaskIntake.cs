@@ -8,6 +8,7 @@ public sealed class InitialDeveloperTaskIntake : IInitialDeveloperTaskIntake
     private readonly IAutomaticResumeCandidateSelector candidateSelector;
     private readonly IDeveloperTaskDiscovery taskDiscovery;
     private readonly IGitRepositoryStatusProvider repositoryStatusProvider;
+    private readonly ICodexExecutionStateStore codexStateStore;
     private readonly IPersistedDeveloperLifecycle persistedLifecycle;
     private readonly ILogger<InitialDeveloperTaskIntake> logger;
 
@@ -15,6 +16,7 @@ public sealed class InitialDeveloperTaskIntake : IInitialDeveloperTaskIntake
         IAutomaticResumeCandidateSelector candidateSelector,
         IDeveloperTaskDiscovery taskDiscovery,
         IGitRepositoryStatusProvider repositoryStatusProvider,
+        ICodexExecutionStateStore codexStateStore,
         IPersistedDeveloperLifecycle persistedLifecycle,
         ILogger<InitialDeveloperTaskIntake> logger)
     {
@@ -22,6 +24,7 @@ public sealed class InitialDeveloperTaskIntake : IInitialDeveloperTaskIntake
         this.taskDiscovery = taskDiscovery ?? throw new ArgumentNullException(nameof(taskDiscovery));
         this.repositoryStatusProvider = repositoryStatusProvider
             ?? throw new ArgumentNullException(nameof(repositoryStatusProvider));
+        this.codexStateStore = codexStateStore ?? throw new ArgumentNullException(nameof(codexStateStore));
         this.persistedLifecycle = persistedLifecycle ?? throw new ArgumentNullException(nameof(persistedLifecycle));
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -63,13 +66,34 @@ public sealed class InitialDeveloperTaskIntake : IInitialDeveloperTaskIntake
                 $"Initial intake repository '{repositoryStatus.RepositoryRoot}' has a detached HEAD.");
         }
 
-        if (repositoryStatus.HasUncommittedChanges)
+        var tasks = await taskDiscovery.DiscoverAsync(request.RepositoryPath, cancellationToken);
+        DeveloperTaskDescriptor? recoverableTask = null;
+        foreach (var task in tasks)
+        {
+            var state = await codexStateStore.LoadAsync(task.Id.ToString(), cancellationToken);
+            if (state?.Phase == CodexExecutionPhase.ReviewRepairRequired &&
+                string.Equals(Path.GetFullPath(state.RepositoryPath), repositoryStatus.RepositoryRoot, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(Path.GetFullPath(state.TaskFilePath), Path.GetFullPath(task.FilePath), StringComparison.OrdinalIgnoreCase))
+            {
+                recoverableTask = task;
+                break;
+            }
+        }
+
+        if (repositoryStatus.HasUncommittedChanges && recoverableTask is null)
         {
             throw new InvalidOperationException(
                 $"Initial intake repository '{repositoryStatus.RepositoryRoot}' has uncommitted changes.");
         }
 
-        var tasks = await taskDiscovery.DiscoverAsync(request.RepositoryPath, cancellationToken);
+        if (recoverableTask is not null)
+        {
+            logger.LogInformation(
+                "Resuming review repair for {TaskId} before initial Developer Task intake.",
+                recoverableTask.Id);
+            return await StartAsync(recoverableTask, request, cancellationToken);
+        }
+
         var selectedTask = tasks.FirstOrDefault();
         if (selectedTask is null)
         {
@@ -79,6 +103,14 @@ public sealed class InitialDeveloperTaskIntake : IInitialDeveloperTaskIntake
             return new InitialDeveloperTaskIntakeResult(InitialDeveloperTaskIntakeState.NoTaskFound);
         }
 
+        return await StartAsync(selectedTask, request, cancellationToken);
+    }
+
+    private async Task<InitialDeveloperTaskIntakeResult> StartAsync(
+        DeveloperTaskDescriptor selectedTask,
+        InitialDeveloperTaskIntakeRequest request,
+        CancellationToken cancellationToken)
+    {
         logger.LogInformation(
             "Initial Developer Task intake selected {TaskId} from repository {RepositoryPath}.",
             selectedTask.Id,
