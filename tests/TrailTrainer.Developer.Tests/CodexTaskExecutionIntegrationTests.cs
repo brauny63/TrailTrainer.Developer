@@ -42,7 +42,7 @@ public sealed class CodexTaskExecutionIntegrationTests
 
         await fixture.ExecuteAsync();
 
-        Assert.Equal(["parse", "load", "start", "save:BranchCreated", "codex", "save:CodexSucceeded", "complete", "pull-request", "delete"], fixture.Calls);
+        Assert.Equal(["parse", "load", "status", "start", "save:BranchCreated", "codex", "save:CodexSucceeded", "complete", "pull-request", "delete"], fixture.Calls);
         Assert.Equal(1, fixture.Executor.Calls);
         Assert.Equal("repository", fixture.Executor.Request!.RepositoryPath);
         Assert.Equal("task.md", fixture.Executor.Request.DeveloperTaskFilePath);
@@ -124,6 +124,7 @@ public sealed class CodexTaskExecutionIntegrationTests
         public FakeStateStore Store { get; }
         public FakeCompleter Completer { get; }
         public FakePullRequests PullRequests { get; }
+        public FakeStatusProvider Status { get; }
         private DeveloperTaskWorkflow Workflow { get; }
 
         public Fixture()
@@ -133,13 +134,71 @@ public sealed class CodexTaskExecutionIntegrationTests
             Store = new FakeStateStore(Calls);
             Completer = new FakeCompleter(Calls);
             PullRequests = new FakePullRequests(Calls);
+            Status = new FakeStatusProvider(Calls);
             Workflow = new DeveloperTaskWorkflow(
-                new FakeParser(Calls), Completer, PullRequests, Starter, Executor, Store);
+                new FakeParser(Calls), Completer, PullRequests, Starter, Executor, Store, Status);
         }
 
         public Task<DeveloperTaskWorkflowResult> ExecuteAsync() => Workflow.ExecuteAsync(
             "task.md", "repository", "repository", "commit", "origin", true,
             new GitHubRepositoryIdentity("owner", "repository"), "main");
+    }
+
+    [Fact]
+    public async Task InterruptedStart_OnCleanExpectedBranch_ReconstructsStateWithoutCreatingBranchAgain()
+    {
+        var fixture = new Fixture();
+        fixture.Status.Result = new GitRepositoryStatus(true, "repository", "feature/dev-0048", false);
+
+        await fixture.ExecuteAsync();
+
+        Assert.Equal(0, fixture.Starter.Calls);
+        Assert.Equal(1, fixture.Executor.Calls);
+        Assert.Contains("save:BranchCreated", fixture.Calls);
+        Assert.Equal(1, fixture.Completer.Calls);
+    }
+
+    [Fact]
+    public async Task Dev0007Regression_InitialSaveFailsThenRestartRecoversWithoutSecondBranchCreation()
+    {
+        var fixture = new Fixture();
+        fixture.Store.SaveExceptionOnce = new InvalidOperationException("initial state move failed");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync());
+        Assert.Equal(1, fixture.Starter.Calls);
+        Assert.Equal(0, fixture.Executor.Calls);
+        Assert.Null(fixture.Store.State);
+
+        fixture.Status.Result = new GitRepositoryStatus(true, "repository", "feature/dev-0048", false);
+        await fixture.ExecuteAsync();
+
+        Assert.Equal(1, fixture.Starter.Calls);
+        Assert.Equal(1, fixture.Executor.Calls);
+        Assert.Equal(1, fixture.Completer.Calls);
+    }
+
+    [Theory]
+    [InlineData("feature/unrelated", false)]
+    [InlineData("feature/dev-0048", true)]
+    public async Task InterruptedStart_UnexpectedOrDirtyBranch_IsRejected(
+        string branch,
+        bool dirty)
+    {
+        var fixture = new Fixture();
+        fixture.Status.Result = new GitRepositoryStatus(true, "repository", branch, dirty);
+        fixture.Starter.Exception = new InvalidOperationException("starter rejected branch");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.ExecuteAsync());
+
+        Assert.Equal(0, fixture.Executor.Calls);
+        Assert.Null(fixture.Store.State);
+    }
+
+    private sealed class FakeStatusProvider(IList<string> calls) : IGitRepositoryStatusProvider
+    {
+        public GitRepositoryStatus Result { get; set; } = new(true, "repository", "main", false);
+        public Task<GitRepositoryStatus> GetStatusAsync(string path, CancellationToken token = default)
+        { calls.Add("status"); return Task.FromResult(Result); }
     }
 
     private sealed class FakeParser(IList<string> calls) : IDeveloperTaskParser
@@ -176,10 +235,21 @@ public sealed class CodexTaskExecutionIntegrationTests
     private sealed class FakeStateStore(IList<string> calls) : ICodexExecutionStateStore
     {
         public CodexExecutionState? State { get; set; }
+        public Exception? SaveExceptionOnce { get; set; }
         public Task<CodexExecutionState?> LoadAsync(string taskId, CancellationToken token = default)
         { calls.Add("load"); return Task.FromResult(State); }
         public Task SaveAsync(CodexExecutionState state, CancellationToken token = default)
-        { State = state; calls.Add($"save:{state.Phase}"); return Task.CompletedTask; }
+        {
+            calls.Add($"save:{state.Phase}");
+            if (SaveExceptionOnce is not null)
+            {
+                var exception = SaveExceptionOnce;
+                SaveExceptionOnce = null;
+                return Task.FromException(exception);
+            }
+            State = state;
+            return Task.CompletedTask;
+        }
         public Task DeleteAsync(string taskId, CancellationToken token = default)
         { State = null; calls.Add("delete"); return Task.CompletedTask; }
     }

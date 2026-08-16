@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using TrailTrainer.Developer.Core;
 
 namespace TrailTrainer.Developer.Persistence;
@@ -6,6 +7,7 @@ namespace TrailTrainer.Developer.Persistence;
 public sealed class LocalJsonCodexExecutionStateStore : ICodexExecutionStateStore
 {
     private readonly string directory;
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> saveLocks = new(StringComparer.OrdinalIgnoreCase);
 
     public LocalJsonCodexExecutionStateStore(string directory)
     {
@@ -25,18 +27,40 @@ public sealed class LocalJsonCodexExecutionStateStore : ICodexExecutionStateStor
     public async Task SaveAsync(CodexExecutionState state, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(state);
-        Directory.CreateDirectory(directory);
         var path = StatePath(state.TaskId);
+        var saveLock = saveLocks.GetOrAdd(path, static _ => new SemaphoreSlim(1, 1));
+        await saveLock.WaitAsync(cancellationToken);
         var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            await using var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                4096, FileOptions.Asynchronous | FileOptions.WriteThrough);
-            await JsonSerializer.SerializeAsync(stream, state, cancellationToken: cancellationToken);
-            await stream.FlushAsync(cancellationToken);
+            Directory.CreateDirectory(directory);
+            await using (var stream = new FileStream(
+                temporary,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await JsonSerializer.SerializeAsync(stream, state, cancellationToken: cancellationToken);
+                await stream.FlushAsync(cancellationToken);
+                stream.Flush(flushToDisk: true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporary, path, true);
         }
-        finally { File.Delete(temporary); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new InvalidOperationException(
+                $"Failed to persist Codex execution state for task '{state.TaskId}' at '{path}'.",
+                exception);
+        }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+            saveLock.Release();
+        }
     }
 
     public Task DeleteAsync(string taskId, CancellationToken cancellationToken = default)
