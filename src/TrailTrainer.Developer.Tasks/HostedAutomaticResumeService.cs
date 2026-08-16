@@ -10,6 +10,7 @@ public sealed class HostedAutomaticResumeService : IHostedService
     private readonly IAutomaticResumeWorkerRequestProvider requestProvider;
     private readonly IInitialDeveloperTaskIntake? intake;
     private readonly IInitialDeveloperTaskIntakeRequestProvider? intakeRequestProvider;
+    private readonly IStrandedCodexStateRecovery? strandedRecovery;
     private readonly ILogger<HostedAutomaticResumeService>? logger;
 
     public HostedAutomaticResumeService(
@@ -17,7 +18,8 @@ public sealed class HostedAutomaticResumeService : IHostedService
         IAutomaticResumeWorkerRequestProvider requestProvider,
         IInitialDeveloperTaskIntake? intake = null,
         IInitialDeveloperTaskIntakeRequestProvider? intakeRequestProvider = null,
-        ILogger<HostedAutomaticResumeService>? logger = null)
+        ILogger<HostedAutomaticResumeService>? logger = null,
+        IStrandedCodexStateRecovery? strandedRecovery = null)
     {
         this.worker = worker ?? throw new ArgumentNullException(nameof(worker));
         this.requestProvider = requestProvider ?? throw new ArgumentNullException(nameof(requestProvider));
@@ -30,6 +32,7 @@ public sealed class HostedAutomaticResumeService : IHostedService
         this.intake = intake;
         this.intakeRequestProvider = intakeRequestProvider;
         this.logger = logger;
+        this.strandedRecovery = strandedRecovery;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -56,6 +59,15 @@ public sealed class HostedAutomaticResumeService : IHostedService
 
         var intakeRequest = intakeRequestProvider!.GetRequest()
             ?? throw new InvalidOperationException("The initial intake request provider returned null.");
+        if (strandedRecovery is not null)
+        {
+            var recovery = await strandedRecovery.TryRecoverAsync(intakeRequest, cancellationToken);
+            if (recovery.Recovered)
+            {
+                await worker.RunAsync(request, cancellationToken);
+                return;
+            }
+        }
         try
         {
             await intake.ExecuteAsync(intakeRequest, cancellationToken);

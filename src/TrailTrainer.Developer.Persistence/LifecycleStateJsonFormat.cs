@@ -88,7 +88,7 @@ internal static class LifecycleStateJsonFormat
         TaskId = state.TaskId,
         TaskFilePath = state.TaskFilePath,
         SavedAtUtc = state.SavedAtUtc.ToString("O"),
-        ResumeContext = new ResumeContextDto
+        ResumeContext = state.ResumeContext is null ? null : new ResumeContextDto
         {
             RepositoryDirectory = state.ResumeContext.RepositoryDirectory,
             RepositoryOwner = state.ResumeContext.Repository.Owner,
@@ -97,16 +97,22 @@ internal static class LifecycleStateJsonFormat
             FeatureBranch = state.ResumeContext.FeatureBranch,
             BaseBranch = state.ResumeContext.BaseBranch,
             GitRemoteName = state.ResumeContext.GitRemoteName
-        }
+        },
+        RecoveryStartRequest = state.RecoveryStartRequest is null ? null : StartRequestDto.From(state.RecoveryStartRequest)
     };
 
     private static DeveloperLifecyclePersistedState FromDto(PersistedStateDto dto)
     {
-        if (dto.TaskId is null || dto.SavedAtUtc is null || dto.ResumeContext is null ||
+        if (dto.TaskId is null || dto.SavedAtUtc is null || (dto.ResumeContext is null) == (dto.RecoveryStartRequest is null))
+        {
+            throw new InvalidDataException("The persisted lifecycle state is missing required data.");
+        }
+
+        if (dto.ResumeContext is not null && (
             dto.ResumeContext.RepositoryDirectory is null || dto.ResumeContext.RepositoryOwner is null ||
             dto.ResumeContext.RepositoryName is null || dto.ResumeContext.PullRequestNumber is null ||
             dto.ResumeContext.FeatureBranch is null || dto.ResumeContext.BaseBranch is null ||
-            dto.ResumeContext.GitRemoteName is null)
+            dto.ResumeContext.GitRemoteName is null))
         {
             throw new InvalidDataException("The persisted lifecycle state is missing required data.");
         }
@@ -121,16 +127,23 @@ internal static class LifecycleStateJsonFormat
             throw new InvalidDataException("The persisted lifecycle state contains an invalid saved timestamp.");
         }
 
+        if (dto.RecoveryStartRequest is not null)
+        {
+            return DeveloperLifecyclePersistedState.CreateRecovery(
+                dto.TaskId, dto.TaskFilePath!, dto.RecoveryStartRequest.ToRequest(), savedAtUtc);
+        }
+
+        var resume = dto.ResumeContext!;
         var repository = new GitHubRepositoryIdentity(
-            dto.ResumeContext.RepositoryOwner,
-            dto.ResumeContext.RepositoryName);
+            resume.RepositoryOwner!,
+            resume.RepositoryName!);
         var context = new DeveloperLifecycleResumeContext(
-            dto.ResumeContext.RepositoryDirectory,
+            resume.RepositoryDirectory!,
             repository,
-            dto.ResumeContext.PullRequestNumber.Value,
-            dto.ResumeContext.FeatureBranch,
-            dto.ResumeContext.BaseBranch,
-            dto.ResumeContext.GitRemoteName);
+            resume.PullRequestNumber!.Value,
+            resume.FeatureBranch!,
+            resume.BaseBranch!,
+            resume.GitRemoteName!);
         return new DeveloperLifecyclePersistedState(
             dto.TaskId,
             dto.TaskFilePath,
@@ -151,6 +164,9 @@ internal static class LifecycleStateJsonFormat
 
         [JsonPropertyName("resumeContext")]
         public ResumeContextDto? ResumeContext { get; init; }
+
+        [JsonPropertyName("recoveryStartRequest")]
+        public StartRequestDto? RecoveryStartRequest { get; init; }
     }
 
     private sealed record ResumeContextDto
@@ -175,5 +191,46 @@ internal static class LifecycleStateJsonFormat
 
         [JsonPropertyName("gitRemoteName")]
         public string? GitRemoteName { get; init; }
+    }
+
+    private sealed record StartRequestDto
+    {
+        public string? TaskId { get; init; }
+        public string? TaskFilePath { get; init; }
+        public string? DeveloperTaskFilePath { get; init; }
+        public string? RepositoryDirectoryPath { get; init; }
+        public string? ExpectedRepositoryName { get; init; }
+        public string? CommitMessage { get; init; }
+        public string? GitRemoteName { get; init; }
+        public bool SetUpstream { get; init; }
+        public string? GitHubOwner { get; init; }
+        public string? GitHubRepository { get; init; }
+        public string? PullRequestBaseBranch { get; init; }
+        public string? PullRequestBody { get; init; }
+        public bool PullRequestDraft { get; init; }
+        public PullRequestMergeMethod MergeMethod { get; init; }
+        public string? MergeCommitTitle { get; init; }
+        public string? MergeCommitMessage { get; init; }
+        public bool DeleteRemoteBranch { get; init; }
+
+        public static StartRequestDto From(PersistedDeveloperLifecycleStartRequest request) => new()
+        {
+            TaskId = request.TaskId, TaskFilePath = request.TaskFilePath,
+            DeveloperTaskFilePath = request.DeveloperTaskFilePath,
+            RepositoryDirectoryPath = request.RepositoryDirectoryPath,
+            ExpectedRepositoryName = request.ExpectedRepositoryName, CommitMessage = request.CommitMessage,
+            GitRemoteName = request.GitRemoteName, SetUpstream = request.SetUpstream,
+            GitHubOwner = request.GitHubRepository.Owner, GitHubRepository = request.GitHubRepository.Repository,
+            PullRequestBaseBranch = request.PullRequestBaseBranch, PullRequestBody = request.PullRequestBody,
+            PullRequestDraft = request.PullRequestDraft, MergeMethod = request.MergeMethod,
+            MergeCommitTitle = request.MergeCommitTitle, MergeCommitMessage = request.MergeCommitMessage,
+            DeleteRemoteBranch = request.DeleteRemoteBranch
+        };
+
+        public PersistedDeveloperLifecycleStartRequest ToRequest() => new(
+            TaskId!, TaskFilePath, DeveloperTaskFilePath!, RepositoryDirectoryPath!, ExpectedRepositoryName!,
+            CommitMessage!, GitRemoteName!, SetUpstream,
+            new GitHubRepositoryIdentity(GitHubOwner!, GitHubRepository!), PullRequestBaseBranch!,
+            PullRequestBody, PullRequestDraft, MergeMethod, MergeCommitTitle, MergeCommitMessage, DeleteRemoteBranch);
     }
 }

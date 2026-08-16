@@ -89,6 +89,7 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
         services.TryAddSingleton<IPersistedDeveloperLifecycle, PersistedDeveloperLifecycle>();
         services.TryAddSingleton<IAutomaticResumeCandidateSelector, AutomaticResumeCandidateSelector>();
         services.TryAddSingleton<IInitialDeveloperTaskIntake, InitialDeveloperTaskIntake>();
+        services.TryAddSingleton<IStrandedCodexStateRecovery, StrandedCodexStateRecovery>();
         services.TryAddSingleton<
             IInitialDeveloperTaskIntakeRequestProvider,
             ConfiguredInitialDeveloperTaskIntakeRequestProvider>();
