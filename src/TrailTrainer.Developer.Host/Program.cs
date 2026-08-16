@@ -6,8 +6,21 @@ using TrailTrainer.Developer.Tasks;
 
 if (WindowsServiceManagementCommandDispatcher.HasCommand(args))
 {
+    var serviceManager = new ScWindowsServiceManager(
+        new WindowsServiceProcessRunner(),
+        new RuntimeWindowsPlatform());
+    Func<IOperationalHealthDiagnostics>? healthDiagnosticsFactory = null;
+    if (WindowsServiceManagementCommandDispatcher.IsHealthCommand(args))
+    {
+        var healthBuilder = Host.CreateApplicationBuilder();
+        healthDiagnosticsFactory = () => new OperationalHealthDiagnostics(
+            serviceManager,
+            new ProductionRuntimeHealthValidator(healthBuilder.Configuration));
+    }
+
     var dispatcher = new WindowsServiceManagementCommandDispatcher(
-        new ScWindowsServiceManager(new WindowsServiceProcessRunner(), new RuntimeWindowsPlatform()));
+        serviceManager,
+        healthDiagnosticsFactory);
     return await dispatcher.RunAsync(
         args,
         Environment.ProcessPath,
