@@ -20,8 +20,6 @@ public sealed class ProductionRuntimeHealthValidator : IProductionRuntimeHealthV
         var services = new ServiceCollection();
         services.AddDeveloperProductionRuntime(configuration);
         services.AddAutomaticResumePipeline();
-        services.Configure<AutomaticResumeHostOptions>(
-            configuration.GetSection(AutomaticResumeHostOptions.SectionName));
         services.AddSingleton<
             IAutomaticResumeWorkerRequestProvider,
             ConfiguredAutomaticResumeWorkerRequestProvider>();
@@ -35,6 +33,8 @@ public sealed class ProductionRuntimeHealthValidator : IProductionRuntimeHealthV
         _ = provider.GetRequiredService<IPersistedDeveloperLifecycle>();
         _ = provider.GetRequiredService<IAutomaticResumeWorker>();
         _ = provider.GetRequiredService<IAutomaticResumeWorkerRequestProvider>();
+        _ = provider.GetRequiredService<IInitialDeveloperTaskIntake>();
+        _ = provider.GetRequiredService<IInitialDeveloperTaskIntakeRequestProvider>().GetRequest();
         return Task.CompletedTask;
     }
 }

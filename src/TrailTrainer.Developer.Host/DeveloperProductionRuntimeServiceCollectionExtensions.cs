@@ -26,6 +26,21 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
                 $"Configuration value '{DeveloperProductionRuntimeOptions.SectionName}:" +
                 $"{nameof(DeveloperProductionRuntimeOptions.LifecycleStateStorageDirectory)}' is required.")
             .ValidateOnStart();
+        services.Configure<AutomaticResumeHostOptions>(
+            configuration.GetSection(AutomaticResumeHostOptions.SectionName));
+        services.AddOptions<InitialTaskIntakeOptions>()
+            .Bind(configuration.GetSection(InitialTaskIntakeOptions.SectionName))
+            .Validate(
+                static options => !options.Enabled ||
+                    (!string.IsNullOrWhiteSpace(options.RepositoryPath) &&
+                     !string.IsNullOrWhiteSpace(options.RepositoryName) &&
+                     !string.IsNullOrWhiteSpace(options.GitHubOwner) &&
+                     !string.IsNullOrWhiteSpace(options.BaseBranch) &&
+                     !string.IsNullOrWhiteSpace(options.RemoteName)),
+                "Enabled initial task intake requires repository path, repository name, GitHub owner, base branch, and remote name.")
+            .ValidateOnStart();
+
+        services.AddLogging();
 
         services.TryAddSingleton<HttpClient>();
 
@@ -41,6 +56,7 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
         services.TryAddSingleton<IPullRequestMerger, GitHubPullRequestMerger>();
 
         services.TryAddSingleton<IDeveloperTaskParser, DeveloperTaskParser>();
+        services.TryAddSingleton<IDeveloperTaskDiscovery, DeveloperTaskDiscovery>();
         services.TryAddSingleton<IDeveloperReviewParser, DeveloperReviewParser>();
         services.TryAddSingleton<IDeveloperReviewValidator, DeveloperReviewValidator>();
         services.TryAddSingleton<IDeveloperTaskStarter, DeveloperTaskStarter>();
@@ -57,6 +73,11 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
         services.TryAddSingleton<IDeveloperLifecycleStateDiscovery>(serviceProvider =>
             new LocalJsonDeveloperLifecycleStateDiscovery(GetStorageDirectory(serviceProvider)));
         services.TryAddSingleton<IPersistedDeveloperLifecycle, PersistedDeveloperLifecycle>();
+        services.TryAddSingleton<IAutomaticResumeCandidateSelector, AutomaticResumeCandidateSelector>();
+        services.TryAddSingleton<IInitialDeveloperTaskIntake, InitialDeveloperTaskIntake>();
+        services.TryAddSingleton<
+            IInitialDeveloperTaskIntakeRequestProvider,
+            ConfiguredInitialDeveloperTaskIntakeRequestProvider>();
 
         return services;
     }

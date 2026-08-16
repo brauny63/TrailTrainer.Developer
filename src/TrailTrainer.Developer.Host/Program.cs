@@ -32,8 +32,6 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddAutomaticResumeWindowsService();
 builder.Services.AddDeveloperProductionRuntime(builder.Configuration);
 builder.Services.AddAutomaticResumePipeline();
-builder.Services.Configure<AutomaticResumeHostOptions>(
-    builder.Configuration.GetSection(AutomaticResumeHostOptions.SectionName));
 builder.Services.AddSingleton<
     IAutomaticResumeWorkerRequestProvider,
     ConfiguredAutomaticResumeWorkerRequestProvider>();
