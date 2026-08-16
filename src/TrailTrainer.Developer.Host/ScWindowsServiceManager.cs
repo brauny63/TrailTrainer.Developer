@@ -78,6 +78,32 @@ public sealed partial class ScWindowsServiceManager : IWindowsServiceManager
             cancellationToken);
     }
 
+    public async Task ConfigureRecoveryAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureWindows();
+        if (await GetStatusAsync(cancellationToken) == WindowsServiceState.NotInstalled)
+        {
+            throw new InvalidOperationException(
+                $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' is not installed.");
+        }
+
+        await RunRequiredAsync(
+            "recovery policy configuration",
+            [
+                "failure",
+                AutomaticResumeWindowsServiceExtensions.ServiceName,
+                "reset=",
+                "86400",
+                "actions=",
+                "restart/60000/restart/60000/restart/60000"
+            ],
+            cancellationToken);
+        await RunRequiredAsync(
+            "non-crash recovery configuration",
+            ["failureflag", AutomaticResumeWindowsServiceExtensions.ServiceName, "1"],
+            cancellationToken);
+    }
+
     public async Task<WindowsServiceState> GetStatusAsync(
         CancellationToken cancellationToken = default)
     {

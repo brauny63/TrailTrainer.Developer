@@ -16,6 +16,7 @@ public sealed class WindowsServiceManagementCommandTests
     [InlineData("start", Operation.Start)]
     [InlineData("stop", Operation.Stop)]
     [InlineData("status", Operation.Status)]
+    [InlineData("recovery", Operation.Recovery)]
     public async Task ManagementCommand_DispatchesExactlyOnce(string command, Operation expected)
     {
         var manager = new RecordingServiceManager { Status = WindowsServiceState.Running };
@@ -221,6 +222,89 @@ public sealed class WindowsServiceManagementCommandTests
         Assert.Equal(WindowsServiceState.NotInstalled, status);
     }
 
+    [Fact]
+    public async Task Recovery_UsesExactRestartPolicyAndNonCrashFlag()
+    {
+        var runner = new RecordingProcessRunner(QueryState(1), Success(), Success());
+        var manager = CreateManager(runner);
+
+        await manager.ConfigureRecoveryAsync();
+
+        Assert.Equal(3, runner.Calls.Count);
+        Assert.All(runner.Calls, call => Assert.Equal("sc.exe", call.Executable));
+        Assert.Equal(["query", "TrailTrainer Developer"], runner.Calls[0].Arguments);
+        Assert.Equal(
+            [
+                "failure", "TrailTrainer Developer",
+                "reset=", "86400",
+                "actions=", "restart/60000/restart/60000/restart/60000"
+            ],
+            runner.Calls[1].Arguments);
+        Assert.Equal(
+            ["failureflag", "TrailTrainer Developer", "1"],
+            runner.Calls[2].Arguments);
+    }
+
+    [Fact]
+    public async Task Recovery_MissingServiceFailsWithoutConfigurationAttempt()
+    {
+        var runner = new RecordingProcessRunner(
+            new WindowsServiceProcessResult(1060, string.Empty, string.Empty));
+        var manager = CreateManager(runner);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.ConfigureRecoveryAsync());
+
+        Assert.Contains("is not installed", exception.Message, StringComparison.Ordinal);
+        var call = Assert.Single(runner.Calls);
+        Assert.Equal(["query", "TrailTrainer Developer"], call.Arguments);
+    }
+
+    [Fact]
+    public async Task Recovery_NonWindowsFailsBeforeProcessExecution()
+    {
+        var runner = new RecordingProcessRunner();
+        var manager = new ScWindowsServiceManager(runner, new StubPlatform(false));
+
+        await Assert.ThrowsAsync<PlatformNotSupportedException>(() =>
+            manager.ConfigureRecoveryAsync());
+
+        Assert.Empty(runner.Calls);
+    }
+
+    [Fact]
+    public async Task Recovery_ScmPolicyFailureIsSurfacedWithoutRetryOrFlagAttempt()
+    {
+        var runner = new RecordingProcessRunner(
+            QueryState(4),
+            new WindowsServiceProcessResult(5, string.Empty, "access denied"));
+        var manager = CreateManager(runner);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.ConfigureRecoveryAsync());
+
+        Assert.Contains("exit code 5", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("access denied", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(2, runner.Calls.Count);
+    }
+
+    [Fact]
+    public async Task Recovery_NonCrashFlagFailureIsSurfacedWithoutRetry()
+    {
+        var runner = new RecordingProcessRunner(
+            QueryState(4),
+            Success(),
+            new WindowsServiceProcessResult(87, string.Empty, "unsupported"));
+        var manager = CreateManager(runner);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            manager.ConfigureRecoveryAsync());
+
+        Assert.Contains("exit code 87", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("unsupported", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(3, runner.Calls.Count);
+    }
+
     private static ScWindowsServiceManager CreateManager(IWindowsServiceProcessRunner runner) =>
         new(runner, new StubPlatform(true));
 
@@ -239,7 +323,8 @@ public sealed class WindowsServiceManagementCommandTests
         Uninstall,
         Start,
         Stop,
-        Status
+        Status,
+        Recovery
     }
 
     private sealed class RecordingServiceManager : IWindowsServiceManager
@@ -258,6 +343,7 @@ public sealed class WindowsServiceManagementCommandTests
         public Task UninstallAsync(CancellationToken cancellationToken = default) => Record(Operation.Uninstall);
         public Task StartAsync(CancellationToken cancellationToken = default) => Record(Operation.Start);
         public Task StopAsync(CancellationToken cancellationToken = default) => Record(Operation.Stop);
+        public Task ConfigureRecoveryAsync(CancellationToken cancellationToken = default) => Record(Operation.Recovery);
 
         public Task<WindowsServiceState> GetStatusAsync(CancellationToken cancellationToken = default)
         {
