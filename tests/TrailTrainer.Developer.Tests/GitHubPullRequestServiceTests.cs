@@ -133,6 +133,7 @@ public sealed class GitHubPullRequestServiceTests
     {
         var handler = new RecordingHandler(_ => JsonResponse(PullRequestArrayJson(1, "feature", "main")));
         using var client = new HttpClient(handler);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
         var service = new GitHubPullRequestService(client, new Uri("https://git.example/api/v3"));
 
         await service.EnsureOpenAsync(Repository(), "feature", "main", "title");
@@ -178,12 +179,75 @@ public sealed class GitHubPullRequestServiceTests
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", secret);
         var service = new GitHubPullRequestService(client);
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => service.EnsureOpenAsync(
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => service.EnsureOpenAsync(
             Repository(), "feature", "main", "title"));
 
         Assert.Contains("401", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(secret, exception.ToString(), StringComparison.Ordinal);
         Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task EnsureOpenAsync_MissingCredential_FailsBeforeHttp()
+    {
+        var handler = new RecordingHandler(_ => JsonResponse("[]"));
+        var service = new GitHubPullRequestService(new HttpClient(handler), new Uri("https://api.test.example/"));
+
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => service.EnsureOpenAsync(
+            Repository(), "feature", "main", "title"));
+
+        Assert.Equal(GitHubApiFailureKind.AuthenticationMissing, exception.FailureKind);
+        Assert.Contains("GitHub:Token", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, GitHubApiFailureKind.AuthenticationRejected)]
+    [InlineData(HttpStatusCode.Forbidden, GitHubApiFailureKind.InsufficientRepositoryAccess)]
+    [InlineData(HttpStatusCode.NotFound, GitHubApiFailureKind.RepositoryNotFoundOrPrivateAccessDenied)]
+    [InlineData(HttpStatusCode.TooManyRequests, GitHubApiFailureKind.RateLimited)]
+    [InlineData(HttpStatusCode.BadGateway, GitHubApiFailureKind.HttpFailure)]
+    public async Task EnsureOpenAsync_GitHubFailure_IsClassified(
+        HttpStatusCode status,
+        GitHubApiFailureKind expectedKind)
+    {
+        var handler = new RecordingHandler(_ => new HttpResponseMessage(status));
+        var service = CreateService(handler);
+
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => service.EnsureOpenAsync(
+            Repository(), "feature", "main", "title"));
+
+        Assert.Equal(expectedKind, exception.FailureKind);
+    }
+
+    [Fact]
+    public async Task EnsureOpenAsync_ForbiddenRateLimit_IsClassifiedSeparately()
+    {
+        var handler = new RecordingHandler(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Forbidden);
+            response.Headers.Add("X-RateLimit-Remaining", "0");
+            return response;
+        });
+
+        var exception = await Assert.ThrowsAsync<GitHubApiException>(() => CreateService(handler).EnsureOpenAsync(
+            Repository(), "feature", "main", "title"));
+
+        Assert.Equal(GitHubApiFailureKind.RateLimited, exception.FailureKind);
+    }
+
+    [Fact]
+    public async Task ProbeAsync_UsesSameAuthenticationPathWithoutMutation()
+    {
+        var handler = new RecordingHandler(_ => JsonResponse("{}"));
+        var service = CreateService(handler);
+
+        await service.ProbeAsync(Repository(), checkOpenPullRequests: true);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request => Assert.Equal(HttpMethod.Get, request.Method));
+        Assert.Contains("/repos/owner/repo", handler.Requests[0].Uri.AbsoluteUri, StringComparison.Ordinal);
+        Assert.Contains("/pulls?state=open", handler.Requests[1].Uri.AbsoluteUri, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -194,7 +258,7 @@ public sealed class GitHubPullRequestServiceTests
             : new HttpResponseMessage(HttpStatusCode.UnprocessableEntity) { ReasonPhrase = "Unprocessable Entity" });
         var service = CreateService(handler);
 
-        await Assert.ThrowsAsync<HttpRequestException>(() => service.EnsureOpenAsync(
+        await Assert.ThrowsAsync<GitHubApiException>(() => service.EnsureOpenAsync(
             Repository(), "feature", "main", "title"));
 
         Assert.Equal(2, handler.Requests.Count);
@@ -240,8 +304,12 @@ public sealed class GitHubPullRequestServiceTests
             Repository(), "feature", "main", "title", cancellationToken: source.Token));
     }
 
-    private static GitHubPullRequestService CreateService(HttpMessageHandler handler) =>
-        new(new HttpClient(handler), new Uri("https://api.test.example/root/"));
+    private static GitHubPullRequestService CreateService(HttpMessageHandler handler)
+    {
+        var client = new HttpClient(handler);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test-token");
+        return new GitHubPullRequestService(client, new Uri("https://api.test.example/root/"));
+    }
 
     private static GitHubRepositoryIdentity Repository() => new("owner", "repo");
 

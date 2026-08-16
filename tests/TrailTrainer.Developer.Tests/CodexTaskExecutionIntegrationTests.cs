@@ -209,7 +209,7 @@ public sealed class CodexTaskExecutionIntegrationTests
 
         await fixture.ExecuteAsync();
 
-        Assert.Equal(["parse", "load", "status", "start", "save:BranchCreated", "codex", "status", "review-parse", "review-validate", "save:CodexSucceeded", "complete", "pull-request", "delete"], fixture.Calls);
+        Assert.Equal(["parse", "load", "status", "start", "save:BranchCreated", "codex", "status", "review-parse", "review-validate", "save:CodexSucceeded", "complete", "save:CompletionSucceeded", "pull-request", "delete"], fixture.Calls);
         Assert.Equal(1, fixture.Executor.Calls);
         Assert.Equal("repository", fixture.Executor.Request!.RepositoryPath);
         Assert.Equal("task.md", fixture.Executor.Request.DeveloperTaskFilePath);
@@ -281,6 +281,24 @@ public sealed class CodexTaskExecutionIntegrationTests
         Assert.Equal(0, fixture.Starter.Calls);
         Assert.Equal(0, fixture.Executor.Calls);
         Assert.Equal(1, fixture.Completer.Calls);
+    }
+
+    [Fact]
+    public async Task PullRequestFailure_RetrySkipsCodexCommitAndPushStage()
+    {
+        var fixture = new Fixture(7);
+        fixture.PullRequests.Exception = new HttpRequestException("private repository unavailable");
+
+        await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
+        Assert.Equal(CodexExecutionPhase.CompletionSucceeded, fixture.Store.State!.Phase);
+        Assert.NotNull(fixture.Store.State.Completion);
+
+        fixture.PullRequests.Exception = null;
+        await fixture.ExecuteAsync();
+
+        Assert.Equal(1, fixture.Executor.Calls);
+        Assert.Equal(1, fixture.Completer.Calls);
+        Assert.Equal(2, fixture.PullRequests.Calls);
     }
 
     [Fact]
@@ -606,9 +624,11 @@ public sealed class CodexTaskExecutionIntegrationTests
     private sealed class FakePullRequests(IList<string> calls) : IPullRequestService
     {
         public int Calls { get; private set; }
+        public Exception? Exception { get; set; }
         public Task<PullRequestEnsureResult> EnsureOpenAsync(GitHubRepositoryIdentity repository, string head, string @base, string title, string? body = null, bool draft = false, CancellationToken token = default)
         {
             Calls++; calls.Add("pull-request");
+            if (Exception is not null) return Task.FromException<PullRequestEnsureResult>(Exception);
             return Task.FromResult(new PullRequestEnsureResult(new PullRequestInfo(48, new Uri("https://example.test/48"), title, head, @base, draft), true));
         }
     }

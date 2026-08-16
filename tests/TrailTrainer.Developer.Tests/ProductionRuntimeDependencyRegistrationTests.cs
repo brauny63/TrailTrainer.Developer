@@ -176,6 +176,7 @@ public sealed class ProductionRuntimeDependencyRegistrationTests
     {
         var values = new Dictionary<string, string?>();
         values[$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run";
+        values[$"{GitHubApiOptions.SectionName}:Token"] = "test-token";
         if (storageDirectory is not null)
         {
             values[$"{DeveloperProductionRuntimeOptions.SectionName}:" +

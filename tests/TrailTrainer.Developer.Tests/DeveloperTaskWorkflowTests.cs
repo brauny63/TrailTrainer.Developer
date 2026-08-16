@@ -100,9 +100,9 @@ public sealed class DeveloperTaskWorkflowTests
         var fixture = new WorkflowFixture();
         fixture.PullRequestService.Exception = new HttpRequestException("PR failed");
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => fixture.ExecuteAsync());
+        var exception = await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
 
-        Assert.Equal("PR failed", exception.Message);
+        Assert.Equal("PR failed", exception.InnerException?.Message);
         Assert.Equal(1, fixture.GatedCompleter.CallCount);
         Assert.Equal(1, fixture.PullRequestService.CallCount);
     }

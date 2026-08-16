@@ -4,4 +4,5 @@ public sealed record CodexExecutionState(
     string TaskId,
     string RepositoryPath,
     string TaskFilePath,
-    CodexExecutionPhase Phase);
+    CodexExecutionPhase Phase,
+    DeveloperTaskGatedCompletionResult? Completion = null);

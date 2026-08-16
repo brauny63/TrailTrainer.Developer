@@ -132,7 +132,8 @@ public sealed class OperationalHealthDiagnosticsTests
             {
                 [$"{DeveloperProductionRuntimeOptions.SectionName}:" +
                     nameof(DeveloperProductionRuntimeOptions.LifecycleStateStorageDirectory)] = storageDirectory,
-                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run"
+                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run",
+                [$"{GitHubApiOptions.SectionName}:Token"] = "test-token"
             })
             .Build();
 

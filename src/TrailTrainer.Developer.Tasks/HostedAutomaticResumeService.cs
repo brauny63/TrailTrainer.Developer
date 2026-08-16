@@ -64,7 +64,16 @@ public sealed class HostedAutomaticResumeService : IHostedService
             var recovery = await strandedRecovery.TryRecoverAsync(intakeRequest, cancellationToken);
             if (recovery.Recovered)
             {
-                await worker.RunAsync(request, cancellationToken);
+                try
+                {
+                    await worker.RunAsync(request, cancellationToken);
+                }
+                catch (DeveloperTaskExecutionException exception)
+                {
+                    logger?.LogError(
+                        exception,
+                        "Recovered Developer Task resume failed in a controlled manner.");
+                }
                 return;
             }
         }

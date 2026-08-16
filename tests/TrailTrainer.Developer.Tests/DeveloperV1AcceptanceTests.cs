@@ -97,7 +97,7 @@ public sealed class DeveloperV1AcceptanceTests
             new RecordingMergeGate(calls),
             new RecordingCleaner(calls));
 
-        var exception = await Assert.ThrowsAsync<HttpRequestException>(() => lifecycle.ExecuteAsync(
+        var exception = await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => lifecycle.ExecuteAsync(
             repository.TaskPath,
             repository.Path,
             repository.Name,
@@ -113,7 +113,7 @@ public sealed class DeveloperV1AcceptanceTests
             null,
             false));
 
-        Assert.Equal("PR boundary failed", exception.Message);
+        Assert.Equal("PR boundary failed", exception.InnerException?.Message);
         Assert.Equal(["stage", "commit", "push", "pull-request"], calls);
     }
 
@@ -188,7 +188,8 @@ public sealed class DeveloperV1AcceptanceTests
                 [$"{DeveloperProductionRuntimeOptions.SectionName}:" +
                     nameof(DeveloperProductionRuntimeOptions.LifecycleStateStorageDirectory)] =
                     System.IO.Path.Combine(root, "lifecycle"),
-                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run"
+                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run",
+                [$"{GitHubApiOptions.SectionName}:Token"] = "test-token"
             })
             .Build();
         try
