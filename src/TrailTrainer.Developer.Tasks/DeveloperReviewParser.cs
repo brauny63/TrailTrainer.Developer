@@ -7,21 +7,6 @@ namespace TrailTrainer.Developer.Tasks;
 
 public sealed partial class DeveloperReviewParser : IDeveloperReviewParser
 {
-    private static readonly string[] RequiredSectionNames =
-    [
-        "Status",
-        "Summary",
-        "Requirements Implemented",
-        "Files Created",
-        "Files Modified",
-        "Files Deleted",
-        "Architecture / Refactoring Notes",
-        "Tests Added",
-        "Verification",
-        "Open Issues / Known Limitations",
-        "Commit and Push"
-    ];
-
     public async Task<DeveloperReviewDocument> ParseAsync(
         string reviewFilePath,
         CancellationToken cancellationToken = default)
@@ -62,7 +47,7 @@ public sealed partial class DeveloperReviewParser : IDeveloperReviewParser
         }
 
         var sections = ParseSections(lines, filePath);
-        foreach (var sectionName in RequiredSectionNames)
+        foreach (var sectionName in DeveloperReviewContract.RequiredSectionNames)
         {
             if (!sections.ContainsKey(sectionName))
             {

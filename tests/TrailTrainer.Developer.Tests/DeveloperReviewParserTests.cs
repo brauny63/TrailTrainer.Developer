@@ -52,6 +52,48 @@ public sealed class DeveloperReviewParserTests
     }
 
     [Fact]
+    public async Task Dev0007Regression_InvalidArchitectureHeading_IsRejectedAndContractRepairsOnlyReview()
+    {
+        using var directory = TemporaryDirectory.Create();
+        var implementationPath = Path.Combine(directory.Path, "implementation.cs");
+        const string implementation = "existing implementation";
+        File.WriteAllText(implementationPath, implementation);
+        var invalid = BuildReport().Replace(
+            "## Architecture / Refactoring Notes",
+            "## Architecture Notes",
+            StringComparison.Ordinal);
+        var reviewPath = WriteReport(directory.Path, invalid);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => parser.ParseAsync(reviewPath));
+
+        var instruction = DeveloperReviewContract.CreateCodexInstruction("DEV-0007.md", repairReviewOnly: true);
+        Assert.Contains("## Architecture / Refactoring Notes", instruction, StringComparison.Ordinal);
+        Assert.Contains("repair only the invalid review", instruction, StringComparison.Ordinal);
+        File.WriteAllText(reviewPath, BuildReport());
+        var corrected = await parser.ParseAsync(reviewPath);
+
+        Assert.Equal("Architecture notes.", corrected.ArchitectureNotes);
+        Assert.Equal(implementation, File.ReadAllText(implementationPath));
+    }
+
+    [Fact]
+    public async Task Review0055_IsParserConformant()
+    {
+        var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var reviewPath = Path.Combine(repositoryRoot, "docs", "developer-reviews", "REVIEW-0055.md");
+
+        var review = await parser.ParseAsync(reviewPath);
+
+        Assert.Equal(new DeveloperTaskId(55), review.TaskId);
+        Assert.Equal(DeveloperReviewStatus.ReadyForReview, review.Status);
+        Assert.True(review.Verification.BuildSuccessful);
+        Assert.True(review.Verification.TestSuccessful);
+        Assert.True(review.Verification.DiffCheckSuccessful);
+        Assert.False(review.CommitCreated);
+        Assert.False(review.PushPerformed);
+    }
+
+    [Fact]
     public async Task ParseAsync_UnknownStatus_Throws()
     {
         using var directory = TemporaryDirectory.Create();
