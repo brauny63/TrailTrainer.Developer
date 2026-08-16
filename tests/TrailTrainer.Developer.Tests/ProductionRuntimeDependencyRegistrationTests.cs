@@ -13,6 +13,19 @@ namespace TrailTrainer.Developer.Tests;
 
 public sealed class ProductionRuntimeDependencyRegistrationTests
 {
+    [Theory]
+    [InlineData("invalid")]
+    [InlineData("")]
+    public void ProductionRuntime_InvalidSandboxModeFailsAtStartup(string mode)
+    {
+        var configuration = CreateConfiguration("state");
+        configuration = new ConfigurationBuilder().AddConfiguration(configuration)
+            .AddInMemoryCollection(new Dictionary<string, string?> { [$"{CodexExecutionOptions.SectionName}:SandboxMode"] = mode }).Build();
+        var services = new ServiceCollection().AddDeveloperProductionRuntime(configuration);
+        using var provider = services.BuildServiceProvider();
+        Assert.Throws<OptionsValidationException>(() => provider.GetRequiredService<IOptions<CodexExecutionOptions>>().Value);
+    }
+
     [Fact]
     public void AddDeveloperProductionRuntime_NullCollectionRejected()
     {

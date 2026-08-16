@@ -14,6 +14,16 @@ public static class Program
         }
 
         var instruction = args.LastOrDefault() ?? string.Empty;
+        if (args.Contains("fake-runner-pipe-timeout", StringComparer.Ordinal))
+        {
+            Console.Error.WriteLine("timed out connecting to runner pipe");
+            return 1;
+        }
+        if (args.Contains("fake-probe-timeout", StringComparer.Ordinal) &&
+            instruction.StartsWith("Compatibility probe:", StringComparison.Ordinal))
+        {
+            Thread.Sleep(Timeout.InfiniteTimeSpan);
+        }
         const string spawnPrefix = "spawn-child:";
         var spawnAt = instruction.IndexOf(spawnPrefix, StringComparison.Ordinal);
         if (spawnAt >= 0)
@@ -30,6 +40,7 @@ public static class Program
 
         Console.WriteLine($"cwd={Environment.CurrentDirectory}");
         Console.WriteLine($"instruction={args.LastOrDefault()}");
+        Console.WriteLine($"arguments={string.Join('|', args)}");
         foreach (var name in new[] { "USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA" })
         {
             Console.WriteLine($"{name}={Environment.GetEnvironmentVariable(name)}");

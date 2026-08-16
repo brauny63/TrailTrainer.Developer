@@ -98,7 +98,9 @@ public sealed class DeveloperTaskWorkflow : IDeveloperTaskWorkflow
                 new CodexTaskExecutionRequest(repositoryDirectoryPath, developerTaskFilePath), cancellationToken);
             if (!codex.Succeeded)
             {
-                var reason = codex.TimedOut ? "timed out" : $"failed with exit code {codex.ExitCode}";
+                var reason = codex.FailureKind == CodexExecutionFailureKind.RunnerPipeTimeout
+                    ? "failed because the Windows sandbox runner pipe timed out"
+                    : codex.TimedOut ? "timed out" : $"failed with exit code {codex.ExitCode}";
                 throw new DeveloperTaskExecutionException(
                     $"Task {taskId} Codex process {reason} in repository '{repositoryDirectoryPath}' on expected branch '{task.ExpectedBranch}' during process execution: {codex.StandardError.Trim()}");
             }

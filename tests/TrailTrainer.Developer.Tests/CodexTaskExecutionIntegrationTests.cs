@@ -34,11 +34,62 @@ public sealed class CodexTaskExecutionIntegrationTests
             Assert.Contains($"USERPROFILE={Path.GetFullPath(profile)}", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
             Assert.Contains($"APPDATA={Path.Combine(profile, "AppData", "Roaming")}", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("fake-codex-stderr", result.StandardError, StringComparison.Ordinal);
+            Assert.Contains("--sandbox|workspace-write|--ask-for-approval|never|--skip-git-repo-check", result.StandardOutput, StringComparison.Ordinal);
         }
         finally
         {
             Directory.Delete(repository, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task ConfiguredCompatibilityArguments_ArePassedStructurally()
+    {
+        var repository = Path.Combine(Path.GetTempPath(), $"codex-mode-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(repository);
+        try
+        {
+            var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
+            {
+                ExecutablePath = DotNetHostPath,
+                AdditionalArguments = [typeof(Program).Assembly.Location],
+                SandboxMode = "danger-full-access",
+                ApprovalPolicy = "never",
+                UserProfileDirectory = repository
+            }));
+            var result = await executor.ExecuteAsync(new CodexTaskExecutionRequest(repository, "mode"));
+            Assert.Contains("--sandbox|danger-full-access|--ask-for-approval|never", result.StandardOutput, StringComparison.Ordinal);
+            Assert.DoesNotContain("dangerously-bypass-approvals-and-sandbox", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(repository, recursive: true); }
+    }
+
+    [Fact]
+    public async Task RunnerPipeTimeout_IsClassifiedDistinctly()
+    {
+        var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
+        {
+            ExecutablePath = DotNetHostPath,
+            AdditionalArguments = [typeof(Program).Assembly.Location, "fake-runner-pipe-timeout"],
+            UserProfileDirectory = Path.GetTempPath()
+        }));
+        var result = await executor.ExecuteAsync(new CodexTaskExecutionRequest(Path.GetTempPath(), "pipe"));
+        Assert.Equal(CodexExecutionFailureKind.RunnerPipeTimeout, result.FailureKind);
+    }
+
+    [Fact]
+    public async Task CompatibilityProbe_UsesTemporaryNonRepositoryAndShortIndependentTimeout()
+    {
+        var executor = new CodexCliTaskExecutor(Options.Create(new CodexExecutionOptions
+        {
+            ExecutablePath = DotNetHostPath,
+            AdditionalArguments = [typeof(Program).Assembly.Location, "fake-probe-timeout"],
+            UserProfileDirectory = Path.GetTempPath(),
+            Timeout = TimeSpan.FromMinutes(1),
+            CompatibilityProbeTimeout = TimeSpan.FromMilliseconds(200)
+        }));
+        var result = await executor.ProbeAsync();
+        Assert.True(result.TimedOut);
     }
 
     [Fact]
@@ -183,6 +234,18 @@ public sealed class CodexTaskExecutionIntegrationTests
         Assert.Contains("exit code 7", exception.Message, StringComparison.Ordinal);
         Assert.Equal(0, fixture.Completer.Calls);
         Assert.Equal(0, fixture.PullRequests.Calls);
+        Assert.Equal(CodexExecutionPhase.BranchCreated, fixture.Store.State!.Phase);
+    }
+
+    [Fact]
+    public async Task RunnerPipeFailure_IsDistinctFromMissingReview()
+    {
+        var fixture = new Fixture();
+        fixture.Executor.Result = new CodexTaskExecutionResult(1, "", "runner pipe connection timed out", false,
+            CodexExecutionFailureKind.RunnerPipeTimeout);
+        var exception = await Assert.ThrowsAsync<DeveloperTaskExecutionException>(() => fixture.ExecuteAsync());
+        Assert.Contains("sandbox runner pipe timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("review", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(CodexExecutionPhase.BranchCreated, fixture.Store.State!.Phase);
     }
 
