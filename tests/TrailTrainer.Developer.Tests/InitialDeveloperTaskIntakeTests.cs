@@ -148,7 +148,8 @@ public sealed class InitialDeveloperTaskIntakeTests
             var values = new Dictionary<string, string?>
             {
                 [$"{DeveloperProductionRuntimeOptions.SectionName}:LifecycleStateStorageDirectory"] =
-                    Path.Combine(fixture.Root, enabled ? "enabled-state" : "disabled-state")
+                    Path.Combine(fixture.Root, enabled ? "enabled-state" : "disabled-state"),
+                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run"
             };
             if (enabled)
             {

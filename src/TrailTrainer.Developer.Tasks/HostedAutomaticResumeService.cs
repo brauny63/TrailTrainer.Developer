@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using TrailTrainer.Developer.Core;
 
 namespace TrailTrainer.Developer.Tasks;
@@ -9,12 +10,14 @@ public sealed class HostedAutomaticResumeService : IHostedService
     private readonly IAutomaticResumeWorkerRequestProvider requestProvider;
     private readonly IInitialDeveloperTaskIntake? intake;
     private readonly IInitialDeveloperTaskIntakeRequestProvider? intakeRequestProvider;
+    private readonly ILogger<HostedAutomaticResumeService>? logger;
 
     public HostedAutomaticResumeService(
         IAutomaticResumeWorker worker,
         IAutomaticResumeWorkerRequestProvider requestProvider,
         IInitialDeveloperTaskIntake? intake = null,
-        IInitialDeveloperTaskIntakeRequestProvider? intakeRequestProvider = null)
+        IInitialDeveloperTaskIntakeRequestProvider? intakeRequestProvider = null,
+        ILogger<HostedAutomaticResumeService>? logger = null)
     {
         this.worker = worker ?? throw new ArgumentNullException(nameof(worker));
         this.requestProvider = requestProvider ?? throw new ArgumentNullException(nameof(requestProvider));
@@ -26,6 +29,7 @@ public sealed class HostedAutomaticResumeService : IHostedService
 
         this.intake = intake;
         this.intakeRequestProvider = intakeRequestProvider;
+        this.logger = logger;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -34,7 +38,18 @@ public sealed class HostedAutomaticResumeService : IHostedService
         {
             var intakeRequest = intakeRequestProvider!.GetRequest()
                 ?? throw new InvalidOperationException("The initial intake request provider returned null.");
-            await intake.ExecuteAsync(intakeRequest, cancellationToken);
+            try
+            {
+                await intake.ExecuteAsync(intakeRequest, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                logger?.LogError(
+                    exception,
+                    "Initial Developer Task intake failed for repository {RepositoryPath}.",
+                    intakeRequest.RepositoryPath);
+                return;
+            }
         }
 
         var request = requestProvider.GetRequest()

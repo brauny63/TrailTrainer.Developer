@@ -131,7 +131,8 @@ public sealed class OperationalHealthDiagnosticsTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 [$"{DeveloperProductionRuntimeOptions.SectionName}:" +
-                    nameof(DeveloperProductionRuntimeOptions.LifecycleStateStorageDirectory)] = storageDirectory
+                    nameof(DeveloperProductionRuntimeOptions.LifecycleStateStorageDirectory)] = storageDirectory,
+                [$"{CodexExecutionOptions.SectionName}:ExecutablePath"] = "test-codex-never-run"
             })
             .Build();
 
