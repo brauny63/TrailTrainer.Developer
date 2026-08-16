@@ -4,6 +4,15 @@ using TrailTrainer.Developer.Core;
 using TrailTrainer.Developer.Host;
 using TrailTrainer.Developer.Tasks;
 
+if (args.Length == 1 && args[0].Equals("codex-probe", StringComparison.OrdinalIgnoreCase))
+{
+    var probeBuilder = Host.CreateApplicationBuilder();
+    probeBuilder.Services.AddDeveloperProductionRuntime(probeBuilder.Configuration);
+    using var probeProvider = probeBuilder.Services.BuildServiceProvider();
+    return await new CodexCompatibilityProbeCommand(
+        probeProvider.GetRequiredService<ICodexCompatibilityProbe>()).RunAsync(Console.Out);
+}
+
 if (WindowsServiceManagementCommandDispatcher.HasCommand(args))
 {
     var serviceManager = new ScWindowsServiceManager(

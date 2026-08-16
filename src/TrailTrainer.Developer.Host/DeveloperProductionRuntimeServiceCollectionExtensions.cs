@@ -43,6 +43,9 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
             .Bind(configuration.GetSection(CodexExecutionOptions.SectionName))
             .Validate(static options => !string.IsNullOrWhiteSpace(options.ExecutablePath), "CodexExecution:ExecutablePath is required.")
             .Validate(static options => options.Timeout > TimeSpan.Zero, "CodexExecution:Timeout must be positive.")
+            .Validate(static options => options.CompatibilityProbeTimeout > TimeSpan.Zero, "CodexExecution:CompatibilityProbeTimeout must be positive.")
+            .Validate(static options => options.SandboxMode is "read-only" or "workspace-write" or "danger-full-access", "CodexExecution:SandboxMode must be read-only, workspace-write, or danger-full-access.")
+            .Validate(static options => options.ApprovalPolicy is "untrusted" or "on-request" or "never", "CodexExecution:ApprovalPolicy must be untrusted, on-request, or never.")
             .Validate(static options => options.MaximumDiagnosticCharacters > 0, "CodexExecution:MaximumDiagnosticCharacters must be positive.")
             .ValidateOnStart();
 
@@ -50,6 +53,8 @@ public static class DeveloperProductionRuntimeServiceCollectionExtensions
 
         services.TryAddSingleton<HttpClient>();
         services.TryAddSingleton<ICodexTaskExecutor, CodexCliTaskExecutor>();
+        services.TryAddSingleton<ICodexCompatibilityProbe>(serviceProvider =>
+            (CodexCliTaskExecutor)serviceProvider.GetRequiredService<ICodexTaskExecutor>());
 
         services.TryAddSingleton<IGitRepositoryStatusProvider, LocalGitRepositoryStatusProvider>();
         services.TryAddSingleton<IGitBranchCreator, LocalGitBranchCreator>();

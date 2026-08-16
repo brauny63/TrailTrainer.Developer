@@ -5,7 +5,10 @@ public sealed class CodexExecutionOptions
     public const string SectionName = "CodexExecution";
     public string ExecutablePath { get; set; } = string.Empty;
     public string[] AdditionalArguments { get; set; } = [];
+    public string SandboxMode { get; set; } = "workspace-write";
+    public string ApprovalPolicy { get; set; } = "never";
     public TimeSpan Timeout { get; set; } = TimeSpan.FromMinutes(30);
+    public TimeSpan CompatibilityProbeTimeout { get; set; } = TimeSpan.FromMinutes(2);
     public int MaximumDiagnosticCharacters { get; set; } = 16_384;
     public string? UserProfileDirectory { get; set; }
 }

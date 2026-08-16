@@ -5,7 +5,7 @@ using TrailTrainer.Developer.Core;
 
 namespace TrailTrainer.Developer.Host;
 
-public sealed class CodexCliTaskExecutor : ICodexTaskExecutor
+public sealed class CodexCliTaskExecutor : ICodexTaskExecutor, ICodexCompatibilityProbe
 {
     private readonly CodexExecutionOptions options;
     private readonly ILogger<CodexCliTaskExecutor> logger;
@@ -24,10 +24,36 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor
     {
         ArgumentNullException.ThrowIfNull(request);
         cancellationToken.ThrowIfCancellationRequested();
+        return await ExecuteProcessAsync(Path.GetFullPath(request.RepositoryPath), request.Instruction, options.Timeout,
+            request.DeveloperTaskFilePath, cancellationToken);
+    }
+
+    public async Task<CodexTaskExecutionResult> ProbeAsync(CancellationToken cancellationToken = default)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"trailtrainer-codex-probe-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            return await ExecuteProcessAsync(directory,
+                "Compatibility probe: execute only the harmless PowerShell command Get-Date, report its output, and make no other changes.",
+                options.CompatibilityProbeTimeout, "<compatibility-probe>", cancellationToken);
+        }
+        finally
+        {
+            try { Directory.Delete(directory, recursive: true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private async Task<CodexTaskExecutionResult> ExecuteProcessAsync(
+        string workingDirectory, string instruction, TimeSpan executionTimeout, string context,
+        CancellationToken cancellationToken)
+    {
         var startInfo = new ProcessStartInfo
         {
             FileName = options.ExecutablePath,
-            WorkingDirectory = Path.GetFullPath(request.RepositoryPath),
+            WorkingDirectory = workingDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -35,13 +61,18 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor
         };
         startInfo.ArgumentList.Add("exec");
         foreach (var argument in options.AdditionalArguments) startInfo.ArgumentList.Add(argument);
-        startInfo.ArgumentList.Add(request.Instruction);
+        startInfo.ArgumentList.Add("--sandbox");
+        startInfo.ArgumentList.Add(options.SandboxMode);
+        startInfo.ArgumentList.Add("--ask-for-approval");
+        startInfo.ArgumentList.Add(options.ApprovalPolicy);
+        startInfo.ArgumentList.Add("--skip-git-repo-check");
+        startInfo.ArgumentList.Add(instruction);
         ApplyUserProfileEnvironment(startInfo);
 
         logger.LogInformation(
             "Starting Codex for task {TaskFile} in repository {Repository}. Executable: {Executable}; working directory: {WorkingDirectory}; user: {User}; environment: {Environment}",
-            request.DeveloperTaskFilePath,
-            request.RepositoryPath,
+            context,
+            workingDirectory,
             options.ExecutablePath,
             startInfo.WorkingDirectory,
             $"{Environment.UserDomainName}\\{Environment.UserName}",
@@ -56,19 +87,21 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor
         {
             logger.LogError(exception,
                 "Codex process could not be started for task {TaskFile} in repository {Repository} with executable {Executable}.",
-                request.DeveloperTaskFilePath, request.RepositoryPath, options.ExecutablePath);
+                context, workingDirectory, options.ExecutablePath);
             throw new InvalidOperationException($"The configured Codex executable '{options.ExecutablePath}' could not be started.", exception);
         }
 
         var output = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
         var error = process.StandardError.ReadToEndAsync(CancellationToken.None);
-        using var timeout = new CancellationTokenSource(options.Timeout);
+        using var timeout = new CancellationTokenSource(executionTimeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         try
         {
             await process.WaitForExitAsync(linked.Token);
-            var result = new CodexTaskExecutionResult(process.ExitCode, Bound(await output), Bound(await error));
-            LogCompletion(request, result);
+            var stdout = Bound(await output);
+            var stderr = Bound(await error);
+            var result = new CodexTaskExecutionResult(process.ExitCode, stdout, stderr, false, Classify(stdout, stderr));
+            LogCompletion(context, workingDirectory, result);
             return result;
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
@@ -76,7 +109,7 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor
             Kill(process);
             await Task.WhenAll(output, error);
             var result = new CodexTaskExecutionResult(-1, Bound(output.Result), Bound(error.Result), true);
-            LogCompletion(request, result);
+            LogCompletion(context, workingDirectory, result);
             return result;
         }
         catch (OperationCanceledException)
@@ -84,7 +117,7 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor
             Kill(process);
             logger.LogWarning(
                 "Codex execution was cancelled for task {TaskFile} in repository {Repository}; the process tree was terminated.",
-                request.DeveloperTaskFilePath, request.RepositoryPath);
+                context, workingDirectory);
             throw;
         }
     }
@@ -119,11 +152,20 @@ public sealed class CodexCliTaskExecutor : ICodexTaskExecutor
             $"{name}={(startInfo.Environment.TryGetValue(name, out var value) ? value : "<unset>")}")));
     }
 
-    private void LogCompletion(CodexTaskExecutionRequest request, CodexTaskExecutionResult result)
+    private static CodexExecutionFailureKind Classify(string stdout, string stderr)
+    {
+        var diagnostic = stdout + "\n" + stderr;
+        return diagnostic.Contains("runner pipe", StringComparison.OrdinalIgnoreCase) &&
+               (diagnostic.Contains("timeout", StringComparison.OrdinalIgnoreCase) || diagnostic.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+            ? CodexExecutionFailureKind.RunnerPipeTimeout
+            : CodexExecutionFailureKind.None;
+    }
+
+    private void LogCompletion(string context, string workingDirectory, CodexTaskExecutionResult result)
     {
         logger.LogInformation(
             "Finished Codex for task {TaskFile} in repository {Repository}. Exit code: {ExitCode}; timed out: {TimedOut}; stdout: {StandardOutput}; stderr: {StandardError}",
-            request.DeveloperTaskFilePath, request.RepositoryPath, result.ExitCode, result.TimedOut,
+            context, workingDirectory, result.ExitCode, result.TimedOut,
             result.StandardOutput, result.StandardError);
     }
     private static void Kill(Process process)
