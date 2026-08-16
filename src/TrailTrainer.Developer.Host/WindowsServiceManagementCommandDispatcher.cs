@@ -32,7 +32,7 @@ public sealed class WindowsServiceManagementCommandDispatcher
         if (arguments.Count != 1 || !IsKnownCommand(arguments[0]))
         {
             await error.WriteLineAsync(
-                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start|setup|provision|deprovision");
+                "Usage: TrailTrainer.Developer.Host install|uninstall|start|stop|status|recovery|delayed-start|setup|provision|deprovision|restart");
             return InvalidCommandExitCode;
         }
 
@@ -100,6 +100,11 @@ public sealed class WindowsServiceManagementCommandDispatcher
                     await output.WriteLineAsync(
                         $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' is not installed.");
                     break;
+                case "restart":
+                    await RestartAsync(cancellationToken);
+                    await output.WriteLineAsync(
+                        $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' restarted.");
+                    break;
             }
 
             return SuccessExitCode;
@@ -148,6 +153,34 @@ public sealed class WindowsServiceManagementCommandDispatcher
         await serviceManager.UninstallAsync(cancellationToken);
     }
 
+    private async Task RestartAsync(CancellationToken cancellationToken)
+    {
+        var state = await serviceManager.GetStatusAsync(cancellationToken);
+        switch (state)
+        {
+            case WindowsServiceState.Running:
+                await serviceManager.StopAsync(cancellationToken);
+                await serviceManager.StartAsync(cancellationToken);
+                return;
+            case WindowsServiceState.Stopped:
+                await serviceManager.StartAsync(cancellationToken);
+                return;
+            case WindowsServiceState.NotInstalled:
+                throw new InvalidOperationException(
+                    $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' is not installed.");
+            case WindowsServiceState.StartPending:
+            case WindowsServiceState.StopPending:
+            case WindowsServiceState.Paused:
+            case WindowsServiceState.Unknown:
+                throw new InvalidOperationException(
+                    $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' cannot be safely " +
+                    $"restarted from state '{state}' without waiting or polling.");
+            default:
+                throw new InvalidOperationException(
+                    $"Windows service '{AutomaticResumeWindowsServiceExtensions.ServiceName}' returned unsupported state '{state}'.");
+        }
+    }
+
     private static string RequireExecutablePath(string? executablePath) =>
         string.IsNullOrWhiteSpace(executablePath)
             ? throw new InvalidOperationException("The current executable path is unavailable.")
@@ -163,5 +196,6 @@ public sealed class WindowsServiceManagementCommandDispatcher
         command.Equals("delayed-start", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("setup", StringComparison.OrdinalIgnoreCase) ||
         command.Equals("provision", StringComparison.OrdinalIgnoreCase) ||
-        command.Equals("deprovision", StringComparison.OrdinalIgnoreCase);
+        command.Equals("deprovision", StringComparison.OrdinalIgnoreCase) ||
+        command.Equals("restart", StringComparison.OrdinalIgnoreCase);
 }

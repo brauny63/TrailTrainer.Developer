@@ -802,6 +802,179 @@ public sealed class WindowsServiceManagementCommandTests
         }
     }
 
+    [Fact]
+    public async Task Restart_RunningServiceStopsThenStartsExactlyOnce()
+    {
+        var manager = new RecordingServiceManager { Status = WindowsServiceState.Running };
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Stop, Operation.Start], manager.Operations);
+        Assert.DoesNotContain(Operation.Install, manager.Operations);
+        Assert.DoesNotContain(Operation.Uninstall, manager.Operations);
+    }
+
+    [Fact]
+    public async Task Restart_StoppedServiceStartsWithoutRedundantStop()
+    {
+        var manager = new RecordingServiceManager { Status = WindowsServiceState.Stopped };
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Start], manager.Operations);
+    }
+
+    [Fact]
+    public async Task Restart_NotInstalledFailsWithoutStopOrStart()
+    {
+        var manager = new RecordingServiceManager { Status = WindowsServiceState.NotInstalled };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status], manager.Operations);
+        Assert.Contains("is not installed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(WindowsServiceState.StartPending)]
+    [InlineData(WindowsServiceState.StopPending)]
+    [InlineData(WindowsServiceState.Paused)]
+    [InlineData(WindowsServiceState.Unknown)]
+    public async Task Restart_UnsupportedStateFailsWithoutChanges(WindowsServiceState state)
+    {
+        var manager = new RecordingServiceManager { Status = state };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status], manager.Operations);
+        Assert.Contains("without waiting or polling", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Restart_StatusFailureIsSurfacedWithoutStopOrStart()
+    {
+        var manager = new RecordingServiceManager
+        {
+            FailureOperation = Operation.Status,
+            Exception = new IOException("status failed")
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status], manager.Operations);
+        Assert.Contains("status failed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Restart_StopFailurePreventsStartAndRetry()
+    {
+        var manager = new RecordingServiceManager
+        {
+            Status = WindowsServiceState.Running,
+            FailureOperation = Operation.Stop,
+            Exception = new IOException("stop failed")
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Stop], manager.Operations);
+        Assert.Contains("stop failed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(WindowsServiceState.Running, true)]
+    [InlineData(WindowsServiceState.Stopped, false)]
+    public async Task Restart_StartFailureIsSurfacedWithoutSecondAttempt(
+        WindowsServiceState state,
+        bool expectsStop)
+    {
+        var manager = new RecordingServiceManager
+        {
+            Status = state,
+            FailureOperation = Operation.Start,
+            Exception = new IOException("start failed")
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        var expected = expectsStop
+            ? new[] { Operation.Status, Operation.Stop, Operation.Start }
+            : new[] { Operation.Status, Operation.Start };
+        Assert.Equal(expected, manager.Operations);
+        Assert.Contains("start failed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Restart_InvalidArgumentsReturnInvalidCommandExitCode()
+    {
+        var manager = new RecordingServiceManager();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart", "extra"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.InvalidCommandExitCode, exitCode);
+        Assert.Empty(manager.Operations);
+    }
+
+    [Fact]
+    public async Task Restart_NonWindowsFailsBeforeProcessExecution()
+    {
+        var runner = new RecordingProcessRunner();
+        var manager = new ScWindowsServiceManager(runner, new StubPlatform(false));
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Empty(runner.Calls);
+    }
+
+    [Fact]
+    public async Task Restart_WithProductionManagerUsesExistingScmOperationsOnly()
+    {
+        var runner = new RecordingProcessRunner(QueryState(4), Success(), Success());
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(CreateManager(runner));
+
+        var exitCode = await dispatcher.RunAsync(
+            ["restart"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal(["query", "stop", "start"],
+            runner.Calls.Select(call => call.Arguments[0]));
+        Assert.All(runner.Calls, call =>
+            Assert.Contains("TrailTrainer Developer", call.Arguments));
+        Assert.DoesNotContain(runner.Calls, call =>
+            call.Arguments[0] is "create" or "delete" or "config" or "failure" or "failureflag");
+    }
+
     private static ScWindowsServiceManager CreateManager(IWindowsServiceProcessRunner runner) =>
         new(runner, new StubPlatform(true));
 
