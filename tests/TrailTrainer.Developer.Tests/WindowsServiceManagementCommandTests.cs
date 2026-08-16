@@ -367,6 +367,131 @@ public sealed class WindowsServiceManagementCommandTests
         Assert.Equal(2, runner.Calls.Count);
     }
 
+    [Fact]
+    public async Task Setup_AppliesDelayedStartThenRecoveryExactlyOnce()
+    {
+        var manager = new RecordingServiceManager();
+        var output = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(["setup"], "host.exe", output, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal([Operation.DelayedStart, Operation.Recovery], manager.Operations);
+        Assert.DoesNotContain(Operation.Install, manager.Operations);
+        Assert.DoesNotContain(Operation.Start, manager.Operations);
+        Assert.DoesNotContain(Operation.Stop, manager.Operations);
+        Assert.Contains("operational setup configured", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Setup_DelayedStartFailureStopsImmediatelyAndSurfacesOriginalFailure()
+    {
+        var failure = new IOException("delayed-start failed");
+        var manager = new RecordingServiceManager
+        {
+            FailureOperation = Operation.DelayedStart,
+            Exception = failure
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(["setup"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.DelayedStart], manager.Operations);
+        Assert.Contains(failure.Message, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Setup_RecoveryFailureIsSurfacedWithoutRollbackOrRetry()
+    {
+        var failure = new IOException("recovery failed");
+        var manager = new RecordingServiceManager
+        {
+            FailureOperation = Operation.Recovery,
+            Exception = failure
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(["setup"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.DelayedStart, Operation.Recovery], manager.Operations);
+        Assert.Contains(failure.Message, error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Setup_InvalidArgumentsReturnInvalidCommandExitCodeWithoutOperations()
+    {
+        var manager = new RecordingServiceManager();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["setup", "extra"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.InvalidCommandExitCode, exitCode);
+        Assert.Empty(manager.Operations);
+    }
+
+    [Fact]
+    public async Task Setup_WithProductionManagerReusesExistingScmOperationsInOrder()
+    {
+        var runner = new RecordingProcessRunner(
+            QueryState(1),
+            Success(),
+            QueryState(1),
+            Success(),
+            Success());
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(CreateManager(runner));
+
+        var exitCode = await dispatcher.RunAsync(
+            ["setup"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal(
+            [
+                "query",
+                "config",
+                "query",
+                "failure",
+                "failureflag"
+            ],
+            runner.Calls.Select(call => call.Arguments[0]));
+        Assert.DoesNotContain(runner.Calls, call =>
+            call.Arguments[0] is "create" or "start" or "stop");
+    }
+
+    [Fact]
+    public async Task Setup_MissingServiceFailsBeforeAnyConfiguration()
+    {
+        var runner = new RecordingProcessRunner(
+            new WindowsServiceProcessResult(1060, string.Empty, string.Empty));
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(CreateManager(runner));
+
+        var exitCode = await dispatcher.RunAsync(
+            ["setup"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        var call = Assert.Single(runner.Calls);
+        Assert.Equal(["query", "TrailTrainer Developer"], call.Arguments);
+    }
+
+    [Fact]
+    public async Task Setup_NonWindowsFailsBeforeProcessExecution()
+    {
+        var runner = new RecordingProcessRunner();
+        var manager = new ScWindowsServiceManager(runner, new StubPlatform(false));
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["setup"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Empty(runner.Calls);
+    }
+
     private static ScWindowsServiceManager CreateManager(IWindowsServiceProcessRunner runner) =>
         new(runner, new StubPlatform(true));
 
@@ -396,6 +521,7 @@ public sealed class WindowsServiceManagementCommandTests
         public string? InstalledExecutablePath { get; private set; }
         public WindowsServiceState Status { get; init; }
         public Exception? Exception { get; init; }
+        public Operation? FailureOperation { get; init; }
 
         public Task InstallAsync(string executablePath, CancellationToken cancellationToken = default)
         {
@@ -413,7 +539,7 @@ public sealed class WindowsServiceManagementCommandTests
         public Task<WindowsServiceState> GetStatusAsync(CancellationToken cancellationToken = default)
         {
             Operations.Add(Operation.Status);
-            return Exception is null
+            return Exception is null || FailureOperation is not null && FailureOperation != Operation.Status
                 ? Task.FromResult(Status)
                 : Task.FromException<WindowsServiceState>(Exception);
         }
@@ -421,7 +547,9 @@ public sealed class WindowsServiceManagementCommandTests
         private Task Record(Operation operation)
         {
             Operations.Add(operation);
-            return Exception is null ? Task.CompletedTask : Task.FromException(Exception);
+            return Exception is null || FailureOperation is not null && FailureOperation != operation
+                ? Task.CompletedTask
+                : Task.FromException(Exception);
         }
     }
 
