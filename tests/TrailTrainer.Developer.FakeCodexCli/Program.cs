@@ -33,7 +33,7 @@ public static class Program
             {
                 FileName = Environment.ProcessPath!,
                 UseShellExecute = false,
-                ArgumentList = { "exec", typeof(Program).Assembly.Location, "child", marker }
+                ArgumentList = { "child", marker }
             });
             Thread.Sleep(Timeout.InfiniteTimeSpan);
         }
