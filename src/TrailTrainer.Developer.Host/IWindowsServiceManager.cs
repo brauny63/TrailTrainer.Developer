@@ -12,5 +12,7 @@ public interface IWindowsServiceManager
 
     Task ConfigureRecoveryAsync(CancellationToken cancellationToken = default);
 
+    Task ConfigureDelayedStartAsync(CancellationToken cancellationToken = default);
+
     Task<WindowsServiceState> GetStatusAsync(CancellationToken cancellationToken = default);
 }
