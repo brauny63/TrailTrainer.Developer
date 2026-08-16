@@ -626,6 +626,182 @@ public sealed class WindowsServiceManagementCommandTests
             Assert.Contains("TrailTrainer Developer", call.Arguments));
     }
 
+    [Fact]
+    public async Task Deprovision_NotInstalledIsIdempotentSuccessWithoutStopOrUninstall()
+    {
+        var manager = new RecordingServiceManager { Status = WindowsServiceState.NotInstalled };
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal([Operation.Status], manager.Operations);
+    }
+
+    [Fact]
+    public async Task Deprovision_StoppedServiceUninstallsWithoutStop()
+    {
+        var manager = new RecordingServiceManager { Status = WindowsServiceState.Stopped };
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Uninstall], manager.Operations);
+    }
+
+    [Theory]
+    [InlineData(WindowsServiceState.Running)]
+    [InlineData(WindowsServiceState.Paused)]
+    public async Task Deprovision_ActiveServiceStopsOnceBeforeUninstall(WindowsServiceState state)
+    {
+        var manager = new RecordingServiceManager { Status = state };
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Stop, Operation.Uninstall], manager.Operations);
+        Assert.DoesNotContain(Operation.Start, manager.Operations);
+    }
+
+    [Theory]
+    [InlineData(WindowsServiceState.StartPending)]
+    [InlineData(WindowsServiceState.StopPending)]
+    [InlineData(WindowsServiceState.Unknown)]
+    public async Task Deprovision_IndeterminateStateFailsWithoutStopOrUninstall(WindowsServiceState state)
+    {
+        var manager = new RecordingServiceManager { Status = state };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status], manager.Operations);
+        Assert.Contains("without waiting or polling", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Deprovision_StopFailurePreventsUninstallAndRetry()
+    {
+        var manager = new RecordingServiceManager
+        {
+            Status = WindowsServiceState.Running,
+            FailureOperation = Operation.Stop,
+            Exception = new IOException("stop failed")
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Stop], manager.Operations);
+        Assert.Contains("stop failed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Deprovision_UninstallFailureAfterStopIsSurfacedWithoutRestartOrRollback()
+    {
+        var manager = new RecordingServiceManager
+        {
+            Status = WindowsServiceState.Running,
+            FailureOperation = Operation.Uninstall,
+            Exception = new IOException("uninstall failed")
+        };
+        var error = new StringWriter();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, error);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Equal([Operation.Status, Operation.Stop, Operation.Uninstall], manager.Operations);
+        Assert.DoesNotContain(Operation.Start, manager.Operations);
+        Assert.Contains("uninstall failed", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Deprovision_InvalidArgumentsReturnInvalidCommandExitCode()
+    {
+        var manager = new RecordingServiceManager();
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision", "extra"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.InvalidCommandExitCode, exitCode);
+        Assert.Empty(manager.Operations);
+    }
+
+    [Fact]
+    public async Task Deprovision_NonWindowsFailsBeforeProcessExecution()
+    {
+        var runner = new RecordingProcessRunner();
+        var manager = new ScWindowsServiceManager(runner, new StubPlatform(false));
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.OperationFailureExitCode, exitCode);
+        Assert.Empty(runner.Calls);
+    }
+
+    [Fact]
+    public async Task Deprovision_WithProductionManagerUsesExistingScmOperationsOnly()
+    {
+        var runner = new RecordingProcessRunner(
+            QueryState(4),
+            Success(),
+            QueryState(3),
+            Success());
+        var dispatcher = new WindowsServiceManagementCommandDispatcher(CreateManager(runner));
+
+        var exitCode = await dispatcher.RunAsync(
+            ["deprovision"], "host.exe", TextWriter.Null, TextWriter.Null);
+
+        Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+        Assert.Equal(["query", "stop", "query", "delete"],
+            runner.Calls.Select(call => call.Arguments[0]));
+        Assert.All(runner.Calls, call =>
+            Assert.Contains("TrailTrainer Developer", call.Arguments));
+        Assert.DoesNotContain(runner.Calls, call => call.Arguments[0] == "start");
+    }
+
+    [Fact]
+    public async Task Deprovision_DoesNotDeleteApplicationOrLifecycleFiles()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"trailtrainer-dev-0043-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        var applicationFile = Path.Combine(directory, "TrailTrainer.Developer.Host.exe");
+        var lifecycleFile = Path.Combine(directory, "lifecycle.json");
+        await File.WriteAllTextAsync(applicationFile, "application");
+        await File.WriteAllTextAsync(lifecycleFile, "state");
+        try
+        {
+            var manager = new RecordingServiceManager { Status = WindowsServiceState.Stopped };
+            var dispatcher = new WindowsServiceManagementCommandDispatcher(manager);
+
+            var exitCode = await dispatcher.RunAsync(
+                ["deprovision"], applicationFile, TextWriter.Null, TextWriter.Null);
+
+            Assert.Equal(WindowsServiceManagementCommandDispatcher.SuccessExitCode, exitCode);
+            Assert.True(File.Exists(applicationFile));
+            Assert.True(File.Exists(lifecycleFile));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     private static ScWindowsServiceManager CreateManager(IWindowsServiceProcessRunner runner) =>
         new(runner, new StubPlatform(true));
 
